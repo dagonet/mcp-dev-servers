@@ -1,6 +1,6 @@
 # MCP Python Tools
 
-Custom [Model Context Protocol](https://modelcontextprotocol.io/) servers for Claude Code, built with [FastMCP](https://github.com/jlowin/fastmcp). Four servers providing 43 tools across git, GitHub, .NET, and Ollama domains.
+Custom [Model Context Protocol](https://modelcontextprotocol.io/) servers for Claude Code, built with [FastMCP](https://github.com/jlowin/fastmcp). Five servers providing 47 tools across git, GitHub, .NET, Ollama, and Rust domains.
 
 ## Servers
 
@@ -10,6 +10,7 @@ Custom [Model Context Protocol](https://modelcontextprotocol.io/) servers for Cl
 | **github-tools** | `src/github_mcp.py` | 2 | GitHub utilities not in the official GitHub MCP (repo detection, workflow listing) |
 | **dotnet-tools** | `src/dotnet_mcp.py` | 19 | .NET build, test, NuGet, EF migrations, code quality, coverage |
 | **ollama-tools** | `src/ollama_mcp.py` | 6 | Local Ollama LLM operations (health, warmup, compression, JSON extraction) |
+| **rust-tools** | `src/rust_mcp.py` | 4 | Cargo build, test, clippy with structured diagnostics |
 
 ## Prerequisites
 
@@ -21,6 +22,7 @@ Each server has its own external dependencies:
 | **github-tools** | Git + [GitHub CLI](https://cli.github.com/) (`gh`) installed and authenticated |
 | **dotnet-tools** | [.NET SDK](https://dotnet.microsoft.com/) 8.0+ |
 | **ollama-tools** | [Ollama](https://ollama.com/) running locally |
+| **rust-tools** | [Rust toolchain](https://rustup.rs/) (cargo, rustc) |
 
 All servers require Python 3.11+ and the packages in `requirements.txt`.
 
@@ -54,6 +56,10 @@ claude mcp add --scope user --transport stdio ollama-tools \
   -e OLLAMA_MODEL_EXTRACT_JSON=qwen2.5:7b-instruct-q4_K_M \
   -- "/path/to/mcp-python-tools/.venv/Scripts/python" "/path/to/mcp-python-tools/src/ollama_mcp.py"
 
+# rust-tools (user-level — works in every Rust project)
+claude mcp add --scope user --transport stdio rust-tools \
+  -- "/path/to/mcp-python-tools/.venv/Scripts/python" "/path/to/mcp-python-tools/src/rust_mcp.py"
+
 # dotnet-tools (project-level — only in .NET projects)
 claude mcp add --scope project --transport stdio dotnet-tools \
   -- "/path/to/mcp-python-tools/.venv/Scripts/python" "/path/to/mcp-python-tools/src/dotnet_mcp.py"
@@ -68,7 +74,8 @@ Then grant tool permissions in your `settings.json` (user or project level):
       "mcp__git-tools__*",
       "mcp__github-tools__*",
       "mcp__dotnet-tools__*",
-      "mcp__ollama-tools__*"
+      "mcp__ollama-tools__*",
+      "mcp__rust-tools__*"
     ]
   }
 }
@@ -81,6 +88,7 @@ Then grant tool permissions in your `settings.json` (user or project level):
 | git-tools | User | Every git repo benefits from these tools |
 | github-tools | User | Every GitHub repo benefits from these tools |
 | ollama-tools | User | Cross-project if running Ollama |
+| rust-tools | User | Every Rust project benefits from these tools |
 | dotnet-tools | Project | Only relevant in .NET projects |
 
 ## Environment Variables
@@ -157,6 +165,15 @@ Then grant tool permissions in your `settings.json` (user or project level):
 | `extract_json` | Extract structured JSON from text |
 | `map_project_structure` | Map directory structure |
 
+### rust-tools (4 tools)
+
+| Tool | Description |
+|------|-------------|
+| `cargo_env_info` | Diagnostic info about Rust/Cargo installation |
+| `cargo_build` | Build with structured error/warning diagnostics |
+| `cargo_test` | Run tests and return results |
+| `cargo_clippy` | Lint with structured clippy diagnostics |
+
 ## JSON Configuration
 
 As an alternative to `claude mcp add`, you can configure servers directly in `~/.claude.json` (user-level) or `.claude/mcp.json` (project-level):
@@ -175,6 +192,10 @@ As an alternative to `claude mcp add`, you can configure servers directly in `~/
     "dotnet-tools": {
       "command": "python",
       "args": ["G:/git/mcp-python-tools/src/dotnet_mcp.py"]
+    },
+    "rust-tools": {
+      "command": "python",
+      "args": ["G:/git/mcp-python-tools/src/rust_mcp.py"]
     },
     "ollama-tools": {
       "command": "python",
