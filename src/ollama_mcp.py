@@ -5,7 +5,7 @@ import httpx
 from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
-mcp = FastMCP("local-ollama")
+mcp = FastMCP("ollama-tools")
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
 

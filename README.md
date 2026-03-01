@@ -11,63 +11,86 @@ Custom [Model Context Protocol](https://modelcontextprotocol.io/) servers for Cl
 | **dotnet-tools** | `src/dotnet_mcp.py` | 19 | .NET build, test, NuGet, EF migrations, code quality, coverage |
 | **ollama-tools** | `src/ollama_mcp.py` | 6 | Local Ollama LLM operations (health, warmup, compression, JSON extraction) |
 
-## Requirements
+## Prerequisites
 
-- Python 3.11+
-- `mcp[cli]` - MCP SDK with CLI support
-- `httpx` - HTTP client (used by ollama-tools only)
+Each server has its own external dependencies:
 
-## Installation
+| Server | Requires |
+|--------|----------|
+| **git-tools** | [Git](https://git-scm.com/) installed and in PATH |
+| **github-tools** | Git + [GitHub CLI](https://cli.github.com/) (`gh`) installed and authenticated |
+| **dotnet-tools** | [.NET SDK](https://dotnet.microsoft.com/) 8.0+ |
+| **ollama-tools** | [Ollama](https://ollama.com/) running locally |
+
+All servers require Python 3.11+ and the packages in `requirements.txt`.
+
+## Quick Start
 
 ```bash
+git clone https://github.com/dagonet/mcp-python-tools.git
+cd mcp-python-tools
+python -m venv .venv
+.venv/Scripts/activate      # Windows
+# source .venv/bin/activate  # Linux/macOS
 pip install -r requirements.txt
 ```
 
-Or with uv:
+Register servers with `claude mcp add`:
 
 ```bash
-uv pip install -r requirements.txt
+# git-tools (user-level — works in every git repo)
+claude mcp add --scope user --transport stdio git-tools \
+  -- "/path/to/mcp-python-tools/.venv/Scripts/python" "/path/to/mcp-python-tools/src/git_mcp.py"
+
+# github-tools (user-level)
+claude mcp add --scope user --transport stdio github-tools \
+  -e GH_PROMPT_DISABLED=1 \
+  -- "/path/to/mcp-python-tools/.venv/Scripts/python" "/path/to/mcp-python-tools/src/github_mcp.py"
+
+# ollama-tools (user-level — if running Ollama)
+claude mcp add --scope user --transport stdio ollama-tools \
+  -e OLLAMA_URL=http://127.0.0.1:11434 \
+  -e OLLAMA_MODEL_FIRST_PASS=mistral:7b-instruct-q4_K_M \
+  -e OLLAMA_MODEL_EXTRACT_JSON=qwen2.5:7b-instruct-q4_K_M \
+  -- "/path/to/mcp-python-tools/.venv/Scripts/python" "/path/to/mcp-python-tools/src/ollama_mcp.py"
+
+# dotnet-tools (project-level — only in .NET projects)
+claude mcp add --scope project --transport stdio dotnet-tools \
+  -- "/path/to/mcp-python-tools/.venv/Scripts/python" "/path/to/mcp-python-tools/src/dotnet_mcp.py"
 ```
 
-## Claude Code Configuration
-
-Add to your `.claude/.mcp.json` (user-level or project-level):
+Then grant tool permissions in your `settings.json` (user or project level):
 
 ```json
 {
-  "mcpServers": {
-    "git-tools": {
-      "command": "python",
-      "args": ["G:/git/mcp-python-tools/src/git_mcp.py"]
-    },
-    "github-tools": {
-      "command": "python",
-      "args": ["G:/git/mcp-python-tools/src/github_mcp.py"]
-    },
-    "dotnet-tools": {
-      "command": "python",
-      "args": ["G:/git/mcp-python-tools/src/dotnet_mcp.py"]
-    },
-    "ollama-tools": {
-      "command": "python",
-      "args": ["G:/git/mcp-python-tools/src/ollama_mcp.py"]
-    }
+  "permissions": {
+    "allow": [
+      "mcp__git-tools__*",
+      "mcp__github-tools__*",
+      "mcp__dotnet-tools__*",
+      "mcp__ollama-tools__*"
+    ]
   }
 }
 ```
 
-Or using `uvx`:
+## Registration Strategy
 
-```json
-{
-  "mcpServers": {
-    "git-tools": {
-      "command": "uvx",
-      "args": ["--from", "mcp[cli]", "mcp", "run", "G:/git/mcp-python-tools/src/git_mcp.py"]
-    }
-  }
-}
-```
+| Server | Scope | Rationale |
+|--------|-------|-----------|
+| git-tools | User | Every git repo benefits from these tools |
+| github-tools | User | Every GitHub repo benefits from these tools |
+| ollama-tools | User | Cross-project if running Ollama |
+| dotnet-tools | Project | Only relevant in .NET projects |
+
+## Environment Variables
+
+| Variable | Server | Default |
+|----------|--------|---------|
+| `OLLAMA_URL` | ollama-tools | `http://127.0.0.1:11434` |
+| `OLLAMA_MODEL_FIRST_PASS` | ollama-tools | `mistral:7b-instruct-q4_K_M` |
+| `OLLAMA_MODEL_EXTRACT_JSON` | ollama-tools | `qwen2.5:7b-instruct-q4_K_M` |
+| `GH_EXE` | github-tools | Auto-detected |
 
 ## Tool Reference
 
@@ -134,6 +157,49 @@ Or using `uvx`:
 | `extract_json` | Extract structured JSON from text |
 | `map_project_structure` | Map directory structure |
 
+## JSON Configuration
+
+As an alternative to `claude mcp add`, you can configure servers directly in `~/.claude.json` (user-level) or `.claude/mcp.json` (project-level):
+
+```json
+{
+  "mcpServers": {
+    "git-tools": {
+      "command": "python",
+      "args": ["G:/git/mcp-python-tools/src/git_mcp.py"]
+    },
+    "github-tools": {
+      "command": "python",
+      "args": ["G:/git/mcp-python-tools/src/github_mcp.py"]
+    },
+    "dotnet-tools": {
+      "command": "python",
+      "args": ["G:/git/mcp-python-tools/src/dotnet_mcp.py"]
+    },
+    "ollama-tools": {
+      "command": "python",
+      "args": ["G:/git/mcp-python-tools/src/ollama_mcp.py"],
+      "env": {
+        "OLLAMA_URL": "http://127.0.0.1:11434"
+      }
+    }
+  }
+}
+```
+
+Or using `uvx`:
+
+```json
+{
+  "mcpServers": {
+    "git-tools": {
+      "command": "uvx",
+      "args": ["--from", "mcp[cli]", "mcp", "run", "G:/git/mcp-python-tools/src/git_mcp.py"]
+    }
+  }
+}
+```
+
 ## Design Decisions
 
 - **stdio transport**: All servers use stdio for Claude Code compatibility
@@ -141,3 +207,7 @@ Or using `uvx`:
 - **No bash git**: `git_mcp.py` resolves `git.exe` directly to avoid `.cmd` wrapper issues on Windows
 - **English locale**: dotnet-tools forces `DOTNET_CLI_UI_LANGUAGE=en` for consistent output parsing
 - **Output limits**: Large outputs (diffs, logs) are truncated to prevent context overflow
+
+## Related
+
+- [ClaudeCodeSetup](https://github.com/dagonet/ClaudeCodeSetup) — Full Claude Code setup guide with MCP server registration, permissions, hooks, and project templates
