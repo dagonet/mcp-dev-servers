@@ -1,4 +1,6 @@
-# MCP Python Tools
+# MCP Dev Servers
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Custom [Model Context Protocol](https://modelcontextprotocol.io/) servers for Claude Code, built with [FastMCP](https://github.com/jlowin/fastmcp). Five servers providing 47 tools across git, GitHub, .NET, Ollama, and Rust domains.
 
@@ -29,8 +31,8 @@ All servers require Python 3.11+ and the packages in `requirements.txt`.
 ## Quick Start
 
 ```bash
-git clone https://github.com/dagonet/mcp-python-tools.git
-cd mcp-python-tools
+git clone https://github.com/dagonet/mcp-dev-servers.git
+cd mcp-dev-servers
 python -m venv .venv
 .venv/Scripts/activate      # Windows
 # source .venv/bin/activate  # Linux/macOS
@@ -42,27 +44,27 @@ Register servers with `claude mcp add`:
 ```bash
 # git-tools (user-level — works in every git repo)
 claude mcp add --scope user --transport stdio git-tools \
-  -- "/path/to/mcp-python-tools/.venv/Scripts/python" "/path/to/mcp-python-tools/src/git_mcp.py"
+  -- "/path/to/mcp-dev-servers/.venv/Scripts/python" "/path/to/mcp-dev-servers/src/git_mcp.py"
 
 # github-tools (user-level)
 claude mcp add --scope user --transport stdio github-tools \
   -e GH_PROMPT_DISABLED=1 \
-  -- "/path/to/mcp-python-tools/.venv/Scripts/python" "/path/to/mcp-python-tools/src/github_mcp.py"
+  -- "/path/to/mcp-dev-servers/.venv/Scripts/python" "/path/to/mcp-dev-servers/src/github_mcp.py"
 
 # ollama-tools (user-level — if running Ollama)
 claude mcp add --scope user --transport stdio ollama-tools \
   -e OLLAMA_URL=http://127.0.0.1:11434 \
   -e OLLAMA_MODEL_FIRST_PASS=mistral:7b-instruct-q4_K_M \
   -e OLLAMA_MODEL_EXTRACT_JSON=qwen2.5:7b-instruct-q4_K_M \
-  -- "/path/to/mcp-python-tools/.venv/Scripts/python" "/path/to/mcp-python-tools/src/ollama_mcp.py"
+  -- "/path/to/mcp-dev-servers/.venv/Scripts/python" "/path/to/mcp-dev-servers/src/ollama_mcp.py"
 
 # rust-tools (user-level — works in every Rust project)
 claude mcp add --scope user --transport stdio rust-tools \
-  -- "/path/to/mcp-python-tools/.venv/Scripts/python" "/path/to/mcp-python-tools/src/rust_mcp.py"
+  -- "/path/to/mcp-dev-servers/.venv/Scripts/python" "/path/to/mcp-dev-servers/src/rust_mcp.py"
 
 # dotnet-tools (project-level — only in .NET projects)
 claude mcp add --scope project --transport stdio dotnet-tools \
-  -- "/path/to/mcp-python-tools/.venv/Scripts/python" "/path/to/mcp-python-tools/src/dotnet_mcp.py"
+  -- "/path/to/mcp-dev-servers/.venv/Scripts/python" "/path/to/mcp-dev-servers/src/dotnet_mcp.py"
 ```
 
 Then grant tool permissions in your `settings.json` (user or project level):
@@ -183,23 +185,23 @@ As an alternative to `claude mcp add`, you can configure servers directly in `~/
   "mcpServers": {
     "git-tools": {
       "command": "python",
-      "args": ["G:/git/mcp-python-tools/src/git_mcp.py"]
+      "args": ["/path/to/mcp-dev-servers/src/git_mcp.py"]
     },
     "github-tools": {
       "command": "python",
-      "args": ["G:/git/mcp-python-tools/src/github_mcp.py"]
+      "args": ["/path/to/mcp-dev-servers/src/github_mcp.py"]
     },
     "dotnet-tools": {
       "command": "python",
-      "args": ["G:/git/mcp-python-tools/src/dotnet_mcp.py"]
+      "args": ["/path/to/mcp-dev-servers/src/dotnet_mcp.py"]
     },
     "rust-tools": {
       "command": "python",
-      "args": ["G:/git/mcp-python-tools/src/rust_mcp.py"]
+      "args": ["/path/to/mcp-dev-servers/src/rust_mcp.py"]
     },
     "ollama-tools": {
       "command": "python",
-      "args": ["G:/git/mcp-python-tools/src/ollama_mcp.py"],
+      "args": ["/path/to/mcp-dev-servers/src/ollama_mcp.py"],
       "env": {
         "OLLAMA_URL": "http://127.0.0.1:11434"
       }
@@ -215,7 +217,7 @@ Or using `uvx`:
   "mcpServers": {
     "git-tools": {
       "command": "uvx",
-      "args": ["--from", "mcp[cli]", "mcp", "run", "G:/git/mcp-python-tools/src/git_mcp.py"]
+      "args": ["--from", "mcp[cli]", "mcp", "run", "/path/to/mcp-dev-servers/src/git_mcp.py"]
     }
   }
 }
@@ -231,4 +233,4 @@ Or using `uvx`:
 
 ## Related
 
-- [ClaudeCodeSetup](https://github.com/dagonet/ClaudeCodeSetup) — Full Claude Code setup guide with MCP server registration, permissions, hooks, and project templates
+- [claude-code-toolkit](https://github.com/dagonet/claude-code-toolkit) -- Template repo for bootstrapping projects with Claude Code, including MCP server registration, permissions, hooks, and project templates
