@@ -231,6 +231,9 @@ Or using `uvx`:
 - **English locale**: dotnet-tools forces `DOTNET_CLI_UI_LANGUAGE=en` for consistent output parsing
 - **Output limits**: Large outputs (diffs, logs) are truncated to prevent context overflow
 
-## Related
+## Related Projects
 
-- [claude-code-toolkit](https://github.com/dagonet/claude-code-toolkit) -- Template repo for bootstrapping projects with Claude Code, including MCP server registration, permissions, hooks, and project templates
+Part of an ecosystem for AI-assisted development with Claude Code:
+
+- [claude-code-toolkit](https://github.com/dagonet/claude-code-toolkit) -- Template system for bootstrapping projects with Claude Code configuration, MCP server setup, and cross-platform setup scripts
+- [open-brain](https://github.com/dagonet/open-brain) -- Persistent memory MCP server that stores decisions, insights, and context across sessions
