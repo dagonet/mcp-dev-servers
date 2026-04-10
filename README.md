@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Custom [Model Context Protocol](https://modelcontextprotocol.io/) servers for Claude Code, built with [FastMCP](https://github.com/jlowin/fastmcp). Five servers providing 47 tools across git, GitHub, .NET, Ollama, and Rust domains.
+Custom [Model Context Protocol](https://modelcontextprotocol.io/) servers for Claude Code, built with [FastMCP](https://github.com/jlowin/fastmcp). Six servers providing 55 tools across git, GitHub, .NET, Ollama, Rust, and template-sync domains.
 
 ## Servers
 
@@ -13,6 +13,7 @@ Custom [Model Context Protocol](https://modelcontextprotocol.io/) servers for Cl
 | **dotnet-tools** | `src/dotnet_mcp.py` | 19 | .NET build, test, NuGet, EF migrations, code quality, coverage |
 | **ollama-tools** | `src/ollama_mcp.py` | 6 | Local Ollama LLM operations (health, warmup, compression, JSON extraction) |
 | **rust-tools** | `src/rust_mcp.py` | 4 | Cargo build, test, clippy with structured diagnostics |
+| **template-sync-tools** | `src/template_sync_mcp.py` | 8 | Template manifest, status, diff, merge, placeholder ops, cross-variant sync |
 
 ## Prerequisites
 
@@ -25,6 +26,7 @@ Each server has its own external dependencies:
 | **dotnet-tools** | [.NET SDK](https://dotnet.microsoft.com/) 8.0+ |
 | **ollama-tools** | [Ollama](https://ollama.com/) running locally |
 | **rust-tools** | [Rust toolchain](https://rustup.rs/) (cargo, rustc) |
+| **template-sync-tools** | Git (for three-way merge ancestor lookup) |
 
 All servers require Python 3.11+ and the packages in `requirements.txt`.
 
@@ -65,6 +67,10 @@ claude mcp add --scope user --transport stdio rust-tools \
 # dotnet-tools (project-level — only in .NET projects)
 claude mcp add --scope project --transport stdio dotnet-tools \
   -- "/path/to/mcp-dev-servers/.venv/Scripts/python" "/path/to/mcp-dev-servers/src/dotnet_mcp.py"
+
+# template-sync-tools (user-level — template syncing for any project)
+claude mcp add --scope user --transport stdio template-sync-tools \
+  -- "/path/to/mcp-dev-servers/.venv/Scripts/python" "/path/to/mcp-dev-servers/src/template_sync_mcp.py"
 ```
 
 Then grant tool permissions in your `settings.json` (user or project level):
@@ -77,7 +83,8 @@ Then grant tool permissions in your `settings.json` (user or project level):
       "mcp__github-tools__*",
       "mcp__dotnet-tools__*",
       "mcp__ollama-tools__*",
-      "mcp__rust-tools__*"
+      "mcp__rust-tools__*",
+      "mcp__template-sync-tools__*"
     ]
   }
 }
@@ -92,6 +99,7 @@ Then grant tool permissions in your `settings.json` (user or project level):
 | ollama-tools | User | Cross-project if running Ollama |
 | rust-tools | User | Every Rust project benefits from these tools |
 | dotnet-tools | Project | Only relevant in .NET projects |
+| template-sync-tools | User | Cross-project template syncing |
 
 ## Environment Variables
 
@@ -176,6 +184,19 @@ Then grant tool permissions in your `settings.json` (user or project level):
 | `cargo_test` | Run tests and return results |
 | `cargo_clippy` | Lint with structured clippy diagnostics |
 
+### template-sync-tools (8 tools)
+
+| Tool | Description |
+|------|-------------|
+| `template_load_manifest` | Load and validate manifest (auto-migrates v1 to v2) |
+| `template_compute_status` | Per-file sync status (UP_TO_DATE, PROJECT_CUSTOM, AUTO_UPDATE, CONFLICT) |
+| `template_get_diff` | Unified diff with three-way merge support |
+| `template_apply_file` | Apply template/provided content or skip, returns manifest entry |
+| `template_finalize_sync` | Atomically write manifest after sync completes |
+| `template_reverse_placeholders` | Deterministic reverse placeholder replacement (longest-first) |
+| `template_check_cross_variant` | Check which variants share identical file content |
+| `template_propagate_to_variants` | Write template-ready content to multiple variant directories |
+
 ## JSON Configuration
 
 As an alternative to `claude mcp add`, you can configure servers directly in `~/.claude.json` (user-level) or `.claude/mcp.json` (project-level):
@@ -205,6 +226,10 @@ As an alternative to `claude mcp add`, you can configure servers directly in `~/
       "env": {
         "OLLAMA_URL": "http://127.0.0.1:11434"
       }
+    },
+    "template-sync-tools": {
+      "command": "python",
+      "args": ["/path/to/mcp-dev-servers/src/template_sync_mcp.py"]
     }
   }
 }
