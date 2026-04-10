@@ -921,3 +921,7 @@ async def template_propagate_to_variants(
         "written_to": written,
         "errors": errors_list,
     }, ensure_ascii=False)
+
+
+if __name__ == "__main__":
+    mcp.run(transport="stdio")
