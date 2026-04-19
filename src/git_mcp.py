@@ -475,6 +475,71 @@ async def git_checkout(repo_path: str, ref: str, create: bool = False) -> str:
 
 
 @mcp.tool()
+async def git_branch_delete(repo_path: str, name: str, force: bool = False) -> str:
+    """
+    Delete a local git branch. Refuses to delete the currently checked-out branch.
+
+    Args:
+        repo_path: Path to the git repository
+        name: Branch name to delete
+        force: If True, use -D (force delete even if unmerged). Default uses -d
+               which requires the branch to be merged.
+
+    Returns:
+        JSON with exit_code and output
+    """
+    if not name:
+        return json.dumps({"error": "branch name required"}, ensure_ascii=False)
+
+    current = run_git(["branch", "--show-current"], cwd=repo_path, timeout_s=10)
+    if current["stdout"].strip() == name:
+        return json.dumps(
+            {"error": f"refusing to delete current branch '{name}'"},
+            ensure_ascii=False,
+        )
+
+    flag = "-D" if force else "-d"
+    res = run_git(["branch", flag, name], cwd=repo_path, timeout_s=20)
+
+    return json.dumps({
+        "exit_code": res["exit_code"],
+        "stdout": res["stdout"],
+        "stderr": res["stderr"],
+    }, ensure_ascii=False)
+
+
+@mcp.tool()
+async def git_fetch(repo_path: str, remote: str = "origin",
+                    branch: str | None = None, prune: bool = False) -> str:
+    """
+    Fetch from remote without merging (unlike git_pull).
+
+    Args:
+        repo_path: Path to the git repository
+        remote: Remote name (default: origin)
+        branch: Specific branch to fetch (default: all configured refspecs)
+        prune: If True, append --prune to remove stale remote-tracking refs
+
+    Returns:
+        JSON with exit_code and output
+    """
+    cmd = ["fetch"]
+    if prune:
+        cmd.append("--prune")
+    cmd.append(remote)
+    if branch:
+        cmd.append(branch)
+
+    res = run_git(cmd, cwd=repo_path, timeout_s=120)
+
+    return json.dumps({
+        "exit_code": res["exit_code"],
+        "stdout": res["stdout"],
+        "stderr": res["stderr"],
+    }, ensure_ascii=False)
+
+
+@mcp.tool()
 async def git_pull(repo_path: str, remote: str = "origin", branch: str | None = None) -> str:
     """
     Pull changes from remote.
@@ -501,7 +566,8 @@ async def git_pull(repo_path: str, remote: str = "origin", branch: str | None = 
 
 
 @mcp.tool()
-async def git_push(repo_path: str, remote: str = "origin", branch: str | None = None, set_upstream: bool = False) -> str:
+async def git_push(repo_path: str, remote: str = "origin", branch: str | None = None,
+                   set_upstream: bool = False, force: bool = False, delete: bool = False) -> str:
     """
     Push changes to remote.
 
@@ -510,13 +576,24 @@ async def git_push(repo_path: str, remote: str = "origin", branch: str | None = 
         remote: Remote name (default: origin)
         branch: Branch to push (default: current branch)
         set_upstream: If True, set upstream tracking (-u flag)
+        force: If True, append --force-with-lease (safer than --force; rejects push
+               if upstream changed since last fetch)
+        delete: If True, append --delete to remove the remote branch. Requires branch
+                to be set. Ignores set_upstream (no upstream to set on a deleted ref).
 
     Returns:
         JSON with exit_code and output
     """
+    if delete and not branch:
+        return json.dumps({"error": "delete=True requires branch to be set"}, ensure_ascii=False)
+
     cmd = ["push"]
     if set_upstream:
         cmd.append("-u")
+    if force:
+        cmd.append("--force-with-lease")
+    if delete:
+        cmd.append("--delete")
     cmd.append(remote)
     if branch:
         cmd.append(branch)
@@ -528,6 +605,40 @@ async def git_push(repo_path: str, remote: str = "origin", branch: str | None = 
         "stdout": res["stdout"],
         "stderr": res["stderr"],
     }, ensure_ascii=False)
+
+
+@mcp.tool()
+async def git_reset(repo_path: str, ref: str, mode: str = "mixed") -> str:
+    """
+    Reset current HEAD to the specified ref.
+
+    Args:
+        repo_path: Path to the git repository
+        ref: Target ref (commit hash, branch, tag, HEAD~N, etc.)
+        mode: One of "soft" (keep index + worktree), "mixed" (keep worktree,
+              reset index; default), or "hard" (discard all uncommitted changes)
+
+    Returns:
+        JSON with exit_code and output. For mode="hard", also includes a
+        "warning" field to flag the destructive operation.
+    """
+    valid_modes = {"soft", "mixed", "hard"}
+    if mode not in valid_modes:
+        return json.dumps({"error": "mode must be soft|mixed|hard"}, ensure_ascii=False)
+    if not ref:
+        return json.dumps({"error": "ref required"}, ensure_ascii=False)
+
+    res = run_git(["reset", f"--{mode}", ref], cwd=repo_path, timeout_s=30)
+
+    payload = {
+        "exit_code": res["exit_code"],
+        "stdout": res["stdout"],
+        "stderr": res["stderr"],
+    }
+    if mode == "hard":
+        payload["warning"] = "hard reset discards uncommitted changes"
+
+    return json.dumps(payload, ensure_ascii=False)
 
 
 @mcp.tool()

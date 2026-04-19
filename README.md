@@ -3,13 +3,13 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/dagonet/mcp-dev-servers)
 
-Custom [Model Context Protocol](https://modelcontextprotocol.io/) servers for Claude Code, built with [FastMCP](https://github.com/jlowin/fastmcp). Six servers providing 55 tools across git, GitHub, .NET, Ollama, Rust, and template-sync domains.
+Custom [Model Context Protocol](https://modelcontextprotocol.io/) servers for Claude Code, built with [FastMCP](https://github.com/jlowin/fastmcp). Six servers providing 58 tools across git, GitHub, .NET, Ollama, Rust, and template-sync domains.
 
 ## Servers
 
 | Server | File | Tools | Description |
 |--------|------|-------|-------------|
-| **git-tools** | `src/git_mcp.py` | 16 | Git operations (status, diff, commit, branch, push, etc.) |
+| **git-tools** | `src/git_mcp.py` | 19 | Git operations (status, diff, commit, branch, push, fetch, reset, etc.) |
 | **github-tools** | `src/github_mcp.py` | 2 | GitHub utilities not in the official GitHub MCP (repo detection, workflow listing) |
 | **dotnet-tools** | `src/dotnet_mcp.py` | 19 | .NET build, test, NuGet, EF migrations, code quality, coverage |
 | **ollama-tools** | `src/ollama_mcp.py` | 6 | Local Ollama LLM operations (health, warmup, compression, JSON extraction) |
@@ -113,7 +113,7 @@ Then grant tool permissions in your `settings.json` (user or project level):
 
 ## Tool Reference
 
-### git-tools (16 tools)
+### git-tools (19 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -133,6 +133,9 @@ Then grant tool permissions in your `settings.json` (user or project level):
 | `git_remote_list` | List configured remotes |
 | `git_tag_list` | List tags |
 | `git_show` | Show commit details |
+| `git_branch_delete` | Delete a local branch (safe against current branch) |
+| `git_fetch` | Fetch from remote without merging |
+| `git_reset` | Reset HEAD to ref (soft/mixed/hard) |
 
 ### github-tools (2 tools)
 
