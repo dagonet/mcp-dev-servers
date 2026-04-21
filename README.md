@@ -33,10 +33,16 @@ All servers require Python 3.11+.
 
 ## Quick Start
 
-Install from PyPI:
+Install directly from the GitHub repo (PyPI publishing is planned but not yet done — see [Roadmap](#roadmap)):
 
 ```bash
-pip install "mcp-dev-servers[ollama]"   # add extras you need — see below
+pip install "mcp-dev-servers[ollama] @ git+https://github.com/dagonet/mcp-dev-servers.git"
+```
+
+Once this package is on PyPI, the shorter form will also work:
+
+```bash
+pip install "mcp-dev-servers[ollama]"   # future — not yet published
 ```
 
 **Available extras:** `ollama` (pulls `httpx`), `git`, `github`, `dotnet`, `rust`, `template-sync`, `dev` (for running tests). The non-`ollama` extras pull no Python packages today — they exist as documentation for which external tool each server expects (see [Prerequisites](#prerequisites)).
@@ -69,7 +75,13 @@ claude mcp add --scope project --transport stdio dotnet-tools -- mcp-dotnet-tool
 claude mcp add --scope user --transport stdio template-sync-tools -- mcp-template-sync-tools
 ```
 
-> If `mcp-git-tools` isn't found on your PATH, install with [`pipx`](https://pipx.pypa.io/) (`pipx install "mcp-dev-servers[ollama]"`) so the scripts land in a PATH-resolvable location — or pass the absolute path to the script in each `claude mcp add` command.
+> If `mcp-git-tools` isn't found on your PATH, install with [`pipx`](https://pipx.pypa.io/) so the scripts land in a PATH-resolvable location:
+>
+> ```bash
+> pipx install "mcp-dev-servers[ollama] @ git+https://github.com/dagonet/mcp-dev-servers.git"
+> ```
+>
+> Alternatively, pass the absolute path to each console script in your `claude mcp add` commands.
 
 Then grant tool permissions in your `settings.json` (user or project level):
 
@@ -242,6 +254,11 @@ If `mcp-*` scripts aren't on your PATH, use the absolute path to the script (e.g
 - **No bash git**: `git_mcp.py` resolves `git.exe` directly to avoid `.cmd` wrapper issues on Windows
 - **English locale**: dotnet-tools forces `DOTNET_CLI_UI_LANGUAGE=en` for consistent output parsing
 - **Output limits**: Large outputs (diffs, logs) are truncated to prevent context overflow
+
+## Roadmap
+
+- **PyPI publishing.** The package is fully PyPI-ready (pyproject.toml, hatchling build, console scripts, smoke tests) but not yet uploaded. Once published, `pip install "mcp-dev-servers[ollama]"` will work without the git URL.
+- **GitHub Actions.** Automated test runs on PRs and Trusted-Publishing-based releases on tag push are planned.
 
 ## Development
 
