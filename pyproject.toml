@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mcp-dev-servers"
+version = "0.1.0"
+description = "FastMCP servers for Claude Code: git, GitHub, .NET, Ollama, Rust, template-sync"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [{ name = "dagonet" }]
+keywords = ["mcp", "claude", "fastmcp", "claude-code"]
+classifiers = [
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+]
+dependencies = ["mcp[cli]"]
+
+[project.optional-dependencies]
+ollama = ["httpx"]
+git = []
+github = []
+dotnet = []
+rust = []
+template-sync = []
+dev = ["pytest", "build", "twine"]
+
+[project.scripts]
+mcp-git-tools = "mcp_dev_servers.git_mcp:main"
+mcp-github-tools = "mcp_dev_servers.github_mcp:main"
+mcp-dotnet-tools = "mcp_dev_servers.dotnet_mcp:main"
+mcp-ollama-tools = "mcp_dev_servers.ollama_mcp:main"
+mcp-rust-tools = "mcp_dev_servers.rust_mcp:main"
+mcp-template-sync-tools = "mcp_dev_servers.template_sync_mcp:main"
+
+[project.urls]
+Homepage = "https://github.com/dagonet/mcp-dev-servers"
+Issues = "https://github.com/dagonet/mcp-dev-servers/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mcp_dev_servers"]

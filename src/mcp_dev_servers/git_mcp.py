@@ -767,5 +767,9 @@ async def git_show(repo_path: str, ref: str = "HEAD") -> str:
 # Entry point
 # -------------------------
 
-if __name__ == "__main__":
+def main():
     mcp.run(transport="stdio")
+
+
+if __name__ == "__main__":
+    main()

@@ -7,14 +7,14 @@ Custom [Model Context Protocol](https://modelcontextprotocol.io/) servers for Cl
 
 ## Servers
 
-| Server | File | Tools | Description |
-|--------|------|-------|-------------|
-| **git-tools** | `src/git_mcp.py` | 19 | Git operations (status, diff, commit, branch, push, fetch, reset, etc.) |
-| **github-tools** | `src/github_mcp.py` | 2 | GitHub utilities not in the official GitHub MCP (repo detection, workflow listing) |
-| **dotnet-tools** | `src/dotnet_mcp.py` | 19 | .NET build, test, NuGet, EF migrations, code quality, coverage |
-| **ollama-tools** | `src/ollama_mcp.py` | 6 | Local Ollama LLM operations (health, warmup, compression, JSON extraction) |
-| **rust-tools** | `src/rust_mcp.py` | 4 | Cargo build, test, clippy with structured diagnostics |
-| **template-sync-tools** | `src/template_sync_mcp.py` | 8 | Template manifest, status, diff, merge, placeholder ops, cross-variant sync |
+| Server | Console script | Module | Tools | Description |
+|--------|----------------|--------|-------|-------------|
+| **git-tools** | `mcp-git-tools` | `mcp_dev_servers.git_mcp` | 19 | Git operations (status, diff, commit, branch, push, fetch, reset, etc.) |
+| **github-tools** | `mcp-github-tools` | `mcp_dev_servers.github_mcp` | 2 | GitHub utilities not in the official GitHub MCP (repo detection, workflow listing) |
+| **dotnet-tools** | `mcp-dotnet-tools` | `mcp_dev_servers.dotnet_mcp` | 19 | .NET build, test, NuGet, EF migrations, code quality, coverage |
+| **ollama-tools** | `mcp-ollama-tools` | `mcp_dev_servers.ollama_mcp` | 6 | Local Ollama LLM operations (health, warmup, compression, JSON extraction) |
+| **rust-tools** | `mcp-rust-tools` | `mcp_dev_servers.rust_mcp` | 4 | Cargo build, test, clippy with structured diagnostics |
+| **template-sync-tools** | `mcp-template-sync-tools` | `mcp_dev_servers.template_sync_mcp` | 8 | Template manifest, status, diff, merge, placeholder ops, cross-variant sync |
 
 ## Prerequisites
 
@@ -29,50 +29,59 @@ Each server has its own external dependencies:
 | **rust-tools** | [Rust toolchain](https://rustup.rs/) (cargo, rustc) |
 | **template-sync-tools** | Git (for three-way merge ancestor lookup) |
 
-All servers require Python 3.11+ and the packages in `requirements.txt`.
+All servers require Python 3.11+.
 
 ## Quick Start
 
+Install directly from the GitHub repo (PyPI publishing is planned but not yet done — see [Roadmap](#roadmap)):
+
 ```bash
-git clone https://github.com/dagonet/mcp-dev-servers.git
-cd mcp-dev-servers
-python -m venv .venv
-.venv/Scripts/activate      # Windows
-# source .venv/bin/activate  # Linux/macOS
-pip install -r requirements.txt
+pip install "mcp-dev-servers[ollama] @ git+https://github.com/dagonet/mcp-dev-servers.git"
 ```
 
-Register servers with `claude mcp add`:
+Once this package is on PyPI, the shorter form will also work:
+
+```bash
+pip install "mcp-dev-servers[ollama]"   # future — not yet published
+```
+
+**Available extras:** `ollama` (pulls `httpx`), `git`, `github`, `dotnet`, `rust`, `template-sync`, `dev` (for running tests). The non-`ollama` extras pull no Python packages today — they exist as documentation for which external tool each server expects (see [Prerequisites](#prerequisites)).
+
+The package installs 6 console scripts (`mcp-git-tools`, `mcp-github-tools`, `mcp-dotnet-tools`, `mcp-ollama-tools`, `mcp-rust-tools`, `mcp-template-sync-tools`). Register them with `claude mcp add`:
 
 ```bash
 # git-tools (user-level — works in every git repo)
-claude mcp add --scope user --transport stdio git-tools \
-  -- "/path/to/mcp-dev-servers/.venv/Scripts/python" "/path/to/mcp-dev-servers/src/git_mcp.py"
+claude mcp add --scope user --transport stdio git-tools -- mcp-git-tools
 
 # github-tools (user-level)
 claude mcp add --scope user --transport stdio github-tools \
   -e GH_PROMPT_DISABLED=1 \
-  -- "/path/to/mcp-dev-servers/.venv/Scripts/python" "/path/to/mcp-dev-servers/src/github_mcp.py"
+  -- mcp-github-tools
 
 # ollama-tools (user-level — if running Ollama)
 claude mcp add --scope user --transport stdio ollama-tools \
   -e OLLAMA_URL=http://127.0.0.1:11434 \
   -e OLLAMA_MODEL_FIRST_PASS=mistral:7b-instruct-q4_K_M \
   -e OLLAMA_MODEL_EXTRACT_JSON=qwen2.5:7b-instruct-q4_K_M \
-  -- "/path/to/mcp-dev-servers/.venv/Scripts/python" "/path/to/mcp-dev-servers/src/ollama_mcp.py"
+  -- mcp-ollama-tools
 
 # rust-tools (user-level — works in every Rust project)
-claude mcp add --scope user --transport stdio rust-tools \
-  -- "/path/to/mcp-dev-servers/.venv/Scripts/python" "/path/to/mcp-dev-servers/src/rust_mcp.py"
+claude mcp add --scope user --transport stdio rust-tools -- mcp-rust-tools
 
 # dotnet-tools (project-level — only in .NET projects)
-claude mcp add --scope project --transport stdio dotnet-tools \
-  -- "/path/to/mcp-dev-servers/.venv/Scripts/python" "/path/to/mcp-dev-servers/src/dotnet_mcp.py"
+claude mcp add --scope project --transport stdio dotnet-tools -- mcp-dotnet-tools
 
 # template-sync-tools (user-level — template syncing for any project)
-claude mcp add --scope user --transport stdio template-sync-tools \
-  -- "/path/to/mcp-dev-servers/.venv/Scripts/python" "/path/to/mcp-dev-servers/src/template_sync_mcp.py"
+claude mcp add --scope user --transport stdio template-sync-tools -- mcp-template-sync-tools
 ```
+
+> If `mcp-git-tools` isn't found on your PATH, install with [`pipx`](https://pipx.pypa.io/) so the scripts land in a PATH-resolvable location:
+>
+> ```bash
+> pipx install "mcp-dev-servers[ollama] @ git+https://github.com/dagonet/mcp-dev-servers.git"
+> ```
+>
+> Alternatively, pass the absolute path to each console script in your `claude mcp add` commands.
 
 Then grant tool permissions in your `settings.json` (user or project level):
 
@@ -209,48 +218,34 @@ As an alternative to `claude mcp add`, you can configure servers directly in `~/
 {
   "mcpServers": {
     "git-tools": {
-      "command": "python",
-      "args": ["/path/to/mcp-dev-servers/src/git_mcp.py"]
+      "command": "mcp-git-tools"
     },
     "github-tools": {
-      "command": "python",
-      "args": ["/path/to/mcp-dev-servers/src/github_mcp.py"]
+      "command": "mcp-github-tools",
+      "env": {
+        "GH_PROMPT_DISABLED": "1"
+      }
     },
     "dotnet-tools": {
-      "command": "python",
-      "args": ["/path/to/mcp-dev-servers/src/dotnet_mcp.py"]
+      "command": "mcp-dotnet-tools"
     },
     "rust-tools": {
-      "command": "python",
-      "args": ["/path/to/mcp-dev-servers/src/rust_mcp.py"]
+      "command": "mcp-rust-tools"
     },
     "ollama-tools": {
-      "command": "python",
-      "args": ["/path/to/mcp-dev-servers/src/ollama_mcp.py"],
+      "command": "mcp-ollama-tools",
       "env": {
         "OLLAMA_URL": "http://127.0.0.1:11434"
       }
     },
     "template-sync-tools": {
-      "command": "python",
-      "args": ["/path/to/mcp-dev-servers/src/template_sync_mcp.py"]
+      "command": "mcp-template-sync-tools"
     }
   }
 }
 ```
 
-Or using `uvx`:
-
-```json
-{
-  "mcpServers": {
-    "git-tools": {
-      "command": "uvx",
-      "args": ["--from", "mcp[cli]", "mcp", "run", "/path/to/mcp-dev-servers/src/git_mcp.py"]
-    }
-  }
-}
-```
+If `mcp-*` scripts aren't on your PATH, use the absolute path to the script (e.g. `"command": "/full/path/to/venv/bin/mcp-git-tools"`) or switch to [`pipx`](https://pipx.pypa.io/) which installs scripts in a PATH-resolvable location.
 
 ## Design Decisions
 
@@ -259,6 +254,27 @@ Or using `uvx`:
 - **No bash git**: `git_mcp.py` resolves `git.exe` directly to avoid `.cmd` wrapper issues on Windows
 - **English locale**: dotnet-tools forces `DOTNET_CLI_UI_LANGUAGE=en` for consistent output parsing
 - **Output limits**: Large outputs (diffs, logs) are truncated to prevent context overflow
+
+## Roadmap
+
+- **PyPI publishing.** The package is fully PyPI-ready (pyproject.toml, hatchling build, console scripts, smoke tests) but not yet uploaded. Once published, `pip install "mcp-dev-servers[ollama]"` will work without the git URL.
+- **GitHub Actions.** Automated test runs on PRs and Trusted-Publishing-based releases on tag push are planned.
+
+## Development
+
+To contribute or run from source:
+
+```bash
+git clone https://github.com/dagonet/mcp-dev-servers.git
+cd mcp-dev-servers
+python -m venv .venv
+.venv/Scripts/activate      # Windows
+# source .venv/bin/activate  # Linux/macOS
+pip install -e ".[ollama,dev]"
+pytest tests/
+```
+
+`pip install -e` installs the package in editable mode, so the console scripts (`mcp-git-tools`, etc.) pick up your local edits immediately. `pytest tests/` runs the smoke tests that verify each server imports cleanly and registers the expected number of tools.
 
 ## Related Projects
 

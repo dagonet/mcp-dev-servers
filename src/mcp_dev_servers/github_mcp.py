@@ -243,5 +243,9 @@ async def gh_workflow_list(repo: str, limit: int = 20) -> str:
 # Entry point
 # -------------------------
 
-if __name__ == "__main__":
+def main():
     mcp.run(transport="stdio")
+
+
+if __name__ == "__main__":
+    main()
