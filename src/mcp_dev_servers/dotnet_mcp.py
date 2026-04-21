@@ -1506,5 +1506,9 @@ async def map_dotnet_structure(root: str, max_files: int = 2000) -> str:
 # Entry point
 # -------------------------
 
-if __name__ == "__main__":
+def main():
     mcp.run(transport="stdio")
+
+
+if __name__ == "__main__":
+    main()

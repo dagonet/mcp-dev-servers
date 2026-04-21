@@ -923,5 +923,9 @@ async def template_propagate_to_variants(
     }, ensure_ascii=False)
 
 
-if __name__ == "__main__":
+def main():
     mcp.run(transport="stdio")
+
+
+if __name__ == "__main__":
+    main()

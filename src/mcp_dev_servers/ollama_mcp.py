@@ -254,5 +254,9 @@ async def map_project_structure(root: str, include: str = "*", max_files: int = 
 # Entry point
 # -------------------------
 
-if __name__ == "__main__":
+def main():
     mcp.run(transport="stdio")
+
+
+if __name__ == "__main__":
+    main()
