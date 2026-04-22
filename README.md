@@ -3,7 +3,18 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/dagonet/mcp-dev-servers)
 
-Custom [Model Context Protocol](https://modelcontextprotocol.io/) servers for Claude Code, built with [FastMCP](https://github.com/jlowin/fastmcp). Six servers providing 58 tools across git, GitHub, .NET, Ollama, Rust, and template-sync domains.
+> **Give Claude Code 58 tools that turn natural-language asks into real `git`, `gh`, `dotnet`, `cargo`, and Ollama operations.** Six MCP servers, one `pip install`, opt in per project — so "what changed since main?" becomes a structured diff and "are any NuGet packages vulnerable?" becomes a real audit.
+
+```
+You: what changed since main?
+Claude calls: git_diff_summary(base="main")
+Returns:      { "files_changed": 3, "insertions": 47, "deletions": 12, ... }
+Claude:       "You changed 3 files since main: src/auth.py (+40 −5), tests/...
+```
+
+✅ **For:** [Claude Code](https://docs.anthropic.com/en/docs/claude-code) users on Windows / macOS / Linux working in git-backed projects (any language; .NET, Rust, and Ollama get bonus tooling).
+
+Built with [FastMCP](https://github.com/jlowin/fastmcp) and the [Model Context Protocol](https://modelcontextprotocol.io/).
 
 ## Servers
 
