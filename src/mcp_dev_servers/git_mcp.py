@@ -764,6 +764,212 @@ async def git_show(repo_path: str, ref: str = "HEAD") -> str:
 
 
 # -------------------------
+# Worktree helpers
+# -------------------------
+
+def _parse_worktree_porcelain(text: str) -> list[dict]:
+    """
+    Parse `git worktree list --porcelain` output into a list of records.
+
+    Records are blocks separated by blank lines. Each block contains some of:
+        worktree <path>
+        HEAD <sha>
+        branch refs/heads/<name>   (absent if detached/bare)
+        bare                       (no value)
+        detached                   (no value)
+        locked [<reason>]
+        prunable [<reason>]
+    """
+    records = []
+    for block in text.split("\n\n"):
+        block = block.strip()
+        if not block:
+            continue
+        rec = {
+            "path": "",
+            "head": "",
+            "branch": None,
+            "bare": False,
+            "detached": False,
+            "locked": False,
+            "prunable": False,
+        }
+        for line in block.splitlines():
+            if line.startswith("worktree "):
+                rec["path"] = line[len("worktree "):]
+            elif line.startswith("HEAD "):
+                rec["head"] = line[len("HEAD "):]
+            elif line.startswith("branch "):
+                ref = line[len("branch "):]
+                rec["branch"] = ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else ref
+            elif line == "bare" or line.startswith("bare "):
+                rec["bare"] = True
+            elif line == "detached" or line.startswith("detached "):
+                rec["detached"] = True
+            elif line == "locked" or line.startswith("locked "):
+                rec["locked"] = True
+            elif line == "prunable" or line.startswith("prunable "):
+                rec["prunable"] = True
+        if rec["path"]:
+            records.append(rec)
+    return records
+
+
+@mcp.tool()
+async def git_worktree_list(repo_path: str, timeout_s: int = 20) -> str:
+    """
+    List git worktrees attached to the repository.
+
+    Either the main checkout path or any existing worktree path is a valid
+    `repo_path` — git treats both as the same repository.
+
+    Args:
+        repo_path: Path to the git repository (main checkout or any worktree)
+        timeout_s: Timeout in seconds
+
+    Returns:
+        JSON with exit_code, worktrees (list of records with path/head/branch/
+        bare/detached/locked/prunable), stderr, timed_out, duration_s
+    """
+    res = run_git(["worktree", "list", "--porcelain"], cwd=repo_path, timeout_s=timeout_s)
+
+    worktrees = _parse_worktree_porcelain(res["stdout"]) if res["exit_code"] == 0 else []
+
+    return json.dumps({
+        "exit_code": res["exit_code"],
+        "worktrees": worktrees,
+        "stderr": res["stderr"],
+        "timed_out": res["timed_out"],
+        "duration_s": res.get("duration_s"),
+    }, ensure_ascii=False)
+
+
+@mcp.tool()
+async def git_worktree_add(
+    repo_path: str,
+    worktree_path: str,
+    new_branch: str | None = None,
+    branch: str | None = None,
+    ref: str | None = None,
+    timeout_s: int = 30,
+) -> str:
+    """
+    Add a new git worktree at `worktree_path`.
+
+    Pass exactly one of `new_branch` (creates a fresh branch) or `branch`
+    (checks out an existing branch). `ref` is the start point for `new_branch`
+    and is rejected when `branch` is given (git's `worktree add <path>
+    <commit-ish>` accepts only one commit-ish).
+
+    After this call, subsequent commits/pushes for that workstream pass
+    `repo_path=<worktree_path>`, NOT the original main-checkout path.
+    Misusing `repo_path` is the most common error.
+
+    Args:
+        repo_path: Main checkout (or any existing worktree) of the repository
+        worktree_path: Filesystem path where the new worktree will be created.
+                       Must be outside `repo_path`; git refuses overlapping paths.
+        new_branch: If set, create this fresh branch and check it out into the worktree
+        branch: If set, check out this existing branch into the worktree
+        ref: Optional start point for `new_branch`. Rejected when `branch` is set.
+        timeout_s: Timeout in seconds
+
+    Returns:
+        JSON with exit_code, stdout, stderr, worktree_path, branch (= new_branch
+        or branch), timed_out
+    """
+    if not worktree_path:
+        return json.dumps({"error": "worktree_path required"}, ensure_ascii=False)
+    if bool(new_branch) == bool(branch):
+        return json.dumps(
+            {"error": "specify exactly one of new_branch or branch"},
+            ensure_ascii=False,
+        )
+    if branch and ref:
+        return json.dumps(
+            {"error": "ref is only valid with new_branch (it sets the start point "
+                      "for the new branch); omit ref when checking out an existing branch"},
+            ensure_ascii=False,
+        )
+
+    if new_branch:
+        cmd = ["worktree", "add", "-b", new_branch, worktree_path]
+        if ref:
+            cmd.append(ref)
+    else:
+        cmd = ["worktree", "add", worktree_path, branch]
+
+    res = run_git(cmd, cwd=repo_path, timeout_s=timeout_s)
+
+    return json.dumps({
+        "exit_code": res["exit_code"],
+        "stdout": res["stdout"],
+        "stderr": res["stderr"],
+        "worktree_path": worktree_path,
+        "branch": new_branch or branch,
+        "timed_out": res["timed_out"],
+    }, ensure_ascii=False)
+
+
+@mcp.tool()
+async def git_worktree_remove(
+    repo_path: str,
+    worktree_path: str,
+    force: bool = False,
+    timeout_s: int = 20,
+) -> str:
+    """
+    Remove a git worktree, optionally forcing removal with uncommitted changes.
+
+    Captures the branch attached to the worktree BEFORE removal and returns it as
+    `freed_branch`, so the caller can decide whether to delete the branch
+    afterwards via git_branch_delete. Returns `freed_branch=None` if the worktree
+    was detached, was not found, or removal failed.
+
+    Either the main checkout path or any other worktree path is a valid
+    `repo_path`.
+
+    Args:
+        repo_path: Main checkout (or any other worktree) of the repository
+        worktree_path: Path to the worktree to remove
+        force: If True, append --force (allows removal with uncommitted changes)
+        timeout_s: Timeout in seconds
+
+    Returns:
+        JSON with exit_code, stdout, stderr, freed_branch (str | None), timed_out
+    """
+    if not worktree_path:
+        return json.dumps({"error": "worktree_path required"}, ensure_ascii=False)
+
+    # Capture the attached branch before removal so we can return freed_branch.
+    pre = run_git(["worktree", "list", "--porcelain"], cwd=repo_path, timeout_s=10)
+    captured_branch = None
+    if pre["exit_code"] == 0:
+        target = os.path.normcase(os.path.normpath(worktree_path))
+        for rec in _parse_worktree_porcelain(pre["stdout"]):
+            if os.path.normcase(os.path.normpath(rec["path"])) == target:
+                captured_branch = rec["branch"]
+                break
+
+    cmd = ["worktree", "remove"]
+    if force:
+        cmd.append("--force")
+    cmd.append(worktree_path)
+
+    res = run_git(cmd, cwd=repo_path, timeout_s=timeout_s)
+
+    freed_branch = captured_branch if res["exit_code"] == 0 else None
+
+    return json.dumps({
+        "exit_code": res["exit_code"],
+        "stdout": res["stdout"],
+        "stderr": res["stderr"],
+        "freed_branch": freed_branch,
+        "timed_out": res["timed_out"],
+    }, ensure_ascii=False)
+
+
+# -------------------------
 # Entry point
 # -------------------------
 

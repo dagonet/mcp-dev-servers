@@ -20,7 +20,7 @@ Built with [FastMCP](https://github.com/jlowin/fastmcp) and the [Model Context P
 
 | Server | Console script | Module | Tools | Description |
 |--------|----------------|--------|-------|-------------|
-| **git-tools** | `mcp-git-tools` | `mcp_dev_servers.git_mcp` | 19 | Git operations (status, diff, commit, branch, push, fetch, reset, etc.) |
+| **git-tools** | `mcp-git-tools` | `mcp_dev_servers.git_mcp` | 22 | Git operations (status, diff, commit, branch, push, fetch, reset, worktree, etc.) |
 | **github-tools** | `mcp-github-tools` | `mcp_dev_servers.github_mcp` | 2 | GitHub utilities not in the official GitHub MCP (repo detection, workflow listing) |
 | **dotnet-tools** | `mcp-dotnet-tools` | `mcp_dev_servers.dotnet_mcp` | 19 | .NET build, test, NuGet, EF migrations, code quality, coverage |
 | **ollama-tools** | `mcp-ollama-tools` | `mcp_dev_servers.ollama_mcp` | 6 | Local Ollama LLM operations (health, warmup, compression, JSON extraction) |
@@ -133,7 +133,7 @@ Then grant tool permissions in your `settings.json` (user or project level):
 
 ## Tool Reference
 
-### git-tools (19 tools)
+### git-tools (22 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -156,6 +156,9 @@ Then grant tool permissions in your `settings.json` (user or project level):
 | `git_branch_delete` | Delete a local branch (safe against current branch) |
 | `git_fetch` | Fetch from remote without merging |
 | `git_reset` | Reset HEAD to ref (soft/mixed/hard) |
+| `git_worktree_list` | List worktrees with parsed branch / detached / locked / prunable flags |
+| `git_worktree_add` | Add a worktree on a new or existing branch |
+| `git_worktree_remove` | Remove a worktree; returns the freed branch name for optional cleanup |
 
 ### github-tools (2 tools)
 
