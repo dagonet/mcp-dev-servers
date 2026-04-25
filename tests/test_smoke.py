@@ -5,7 +5,7 @@ import importlib
 import pytest
 
 SERVERS = [
-    ("mcp_dev_servers.git_mcp", 19),
+    ("mcp_dev_servers.git_mcp", 22),
     ("mcp_dev_servers.github_mcp", 2),
     ("mcp_dev_servers.dotnet_mcp", 19),
     ("mcp_dev_servers.ollama_mcp", 6),
