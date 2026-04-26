@@ -295,4 +295,6 @@ pytest tests/
 Part of an ecosystem for AI-assisted development with Claude Code:
 
 - [claude-code-toolkit](https://github.com/dagonet/claude-code-toolkit) -- Template system for bootstrapping projects with Claude Code configuration, MCP server setup, and cross-platform setup scripts
-- [open-brain](https://github.com/dagonet/open-brain) -- Persistent memory MCP server that stores decisions, insights, and context across sessions
+- [open-brain](https://github.com/dagonet/open-brain) -- A personal AI memory system with a CLI, MCP server, and web dashboard; as of v0.3.0 it also compiles topic-level wiki pages with provenance and runs a contradiction-audit pass over your captured notes
+
+Open Brain's MCP server runs alongside the servers here in the same Claude Code session -- its `thoughts_*`, `wiki_*`, and `contradictions_*` tools surface decisions, insights, and topic summaries that complement the `git_*`, `gh_*`, `dotnet_*`, `cargo_*`, `ollama_*`, and `template_*` tools above.
