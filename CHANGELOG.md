@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `git-tools`: 3 worktree tools — `git_worktree_list`, `git_worktree_add`, `git_worktree_remove` — bringing `git-tools` from 19 to 22 tools and the package total from 58 to 61. ([PR #4](https://github.com/dagonet/mcp-dev-servers/pull/4))
+
+### Changed
+- README intro now leads with the outcome ("Give Claude Code N tools that…") and a worked example, ahead of the prerequisites/install sections. ([PR #3](https://github.com/dagonet/mcp-dev-servers/pull/3))
+- README *Related Projects* now links to Open Brain v0.3.0 and describes the wiki + contradictions families. ([PR #5](https://github.com/dagonet/mcp-dev-servers/pull/5))
+
 ## [0.1.0] — 2026-04-21
 
 Initial packaged release. ([PR #1](https://github.com/dagonet/mcp-dev-servers/pull/1))
