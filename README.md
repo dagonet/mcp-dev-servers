@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/dagonet/mcp-dev-servers)
 
-> **Give Claude Code 61 tools that turn natural-language asks into real `git`, `gh`, `dotnet`, `cargo`, and Ollama operations.** Six MCP servers, one `pip install`, opt in per project — so "what changed since main?" becomes a structured diff and "are any NuGet packages vulnerable?" becomes a real audit.
+> **Give Claude Code 95 tools that turn natural-language asks into real `git`, `gh`, `dotnet`, `cargo`, `uv`, and Ollama operations.** Seven MCP servers, one `pip install`, opt in per project — so "what changed since main?" becomes a structured diff and "are any NuGet packages vulnerable?" becomes a real audit.
 
 ```
 You: what changed since main?
@@ -20,12 +20,13 @@ Built with [FastMCP](https://github.com/jlowin/fastmcp) and the [Model Context P
 
 | Server | Console script | Module | Tools | Description |
 |--------|----------------|--------|-------|-------------|
-| **git-tools** | `mcp-git-tools` | `mcp_dev_servers.git_mcp` | 22 | Git operations (status, diff, commit, branch, push, fetch, reset, worktree, etc.) |
-| **github-tools** | `mcp-github-tools` | `mcp_dev_servers.github_mcp` | 2 | GitHub utilities not in the official GitHub MCP (repo detection, workflow listing) |
+| **git-tools** | `mcp-git-tools` | `mcp_dev_servers.git_mcp` | 34 | Git operations (status, diff, commit, tag, branch, push, fetch, reset, rebase, worktree, etc.) |
+| **github-tools** | `mcp-github-tools` | `mcp_dev_servers.github_mcp` | 17 | GitHub utilities not in the official GitHub MCP (releases, workflow dispatch/management, PR labels/auto-merge, branch protection) |
 | **dotnet-tools** | `mcp-dotnet-tools` | `mcp_dev_servers.dotnet_mcp` | 19 | .NET build, test, NuGet, EF migrations, code quality, coverage |
 | **ollama-tools** | `mcp-ollama-tools` | `mcp_dev_servers.ollama_mcp` | 6 | Local Ollama LLM operations (health, warmup, compression, JSON extraction) |
 | **rust-tools** | `mcp-rust-tools` | `mcp_dev_servers.rust_mcp` | 4 | Cargo build, test, clippy with structured diagnostics |
 | **template-sync-tools** | `mcp-template-sync-tools` | `mcp_dev_servers.template_sync_mcp` | 8 | Template manifest, status, diff, merge, placeholder ops, cross-variant sync |
+| **python-tools** | `mcp-python-tools` | `mcp_dev_servers.python_tools_mcp` | 7 | Python dev workflows (wheel/sdist inspect, smoke install, pytest, ruff, uv build, coverage) |
 
 ## Prerequisites
 
@@ -39,6 +40,7 @@ Each server has its own external dependencies:
 | **ollama-tools** | [Ollama](https://ollama.com/) running locally |
 | **rust-tools** | [Rust toolchain](https://rustup.rs/) (cargo, rustc) |
 | **template-sync-tools** | Git (for three-way merge ancestor lookup) |
+| **python-tools** | Python 3.11+, `uv`, `pytest`, `ruff`, `coverage` (in project environment) |
 
 All servers require Python 3.11+.
 
@@ -56,9 +58,9 @@ Once this package is on PyPI, the shorter form will also work:
 pip install "mcp-dev-servers[ollama]"   # future — not yet published
 ```
 
-**Available extras:** `ollama` (pulls `httpx`), `git`, `github`, `dotnet`, `rust`, `template-sync`, `dev` (for running tests). The non-`ollama` extras pull no Python packages today — they exist as documentation for which external tool each server expects (see [Prerequisites](#prerequisites)).
+**Available extras:** `ollama` (pulls `httpx`), `git`, `github`, `dotnet`, `rust`, `template-sync`, `python-tools`, `dev` (for running tests). The non-`ollama` extras pull no Python packages today — they exist as documentation for which external tool each server expects (see [Prerequisites](#prerequisites)).
 
-The package installs 6 console scripts (`mcp-git-tools`, `mcp-github-tools`, `mcp-dotnet-tools`, `mcp-ollama-tools`, `mcp-rust-tools`, `mcp-template-sync-tools`). Register them with `claude mcp add`:
+The package installs 7 console scripts (`mcp-git-tools`, `mcp-github-tools`, `mcp-dotnet-tools`, `mcp-ollama-tools`, `mcp-rust-tools`, `mcp-template-sync-tools`, `mcp-python-tools`). Register them with `claude mcp add`:
 
 ```bash
 # git-tools (user-level — works in every git repo)
@@ -84,6 +86,9 @@ claude mcp add --scope project --transport stdio dotnet-tools -- mcp-dotnet-tool
 
 # template-sync-tools (user-level — template syncing for any project)
 claude mcp add --scope user --transport stdio template-sync-tools -- mcp-template-sync-tools
+
+# python-tools (user-level — works in every Python project)
+claude mcp add --scope user --transport stdio python-tools -- mcp-python-tools
 ```
 
 > If `mcp-git-tools` isn't found on your PATH, install with [`pipx`](https://pipx.pypa.io/) so the scripts land in a PATH-resolvable location:
@@ -105,7 +110,8 @@ Then grant tool permissions in your `settings.json` (user or project level):
       "mcp__dotnet-tools__*",
       "mcp__ollama-tools__*",
       "mcp__rust-tools__*",
-      "mcp__template-sync-tools__*"
+      "mcp__template-sync-tools__*",
+      "mcp__python-tools__*"
     ]
   }
 }
@@ -121,6 +127,7 @@ Then grant tool permissions in your `settings.json` (user or project level):
 | rust-tools | User | Every Rust project benefits from these tools |
 | dotnet-tools | Project | Only relevant in .NET projects |
 | template-sync-tools | User | Cross-project template syncing |
+| python-tools | User | Every Python project benefits from these tools |
 
 ## Environment Variables
 
@@ -133,7 +140,7 @@ Then grant tool permissions in your `settings.json` (user or project level):
 
 ## Tool Reference
 
-### git-tools (22 tools)
+### git-tools (34 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -146,26 +153,53 @@ Then grant tool permissions in your `settings.json` (user or project level):
 | `git_diff` | Full diff output |
 | `git_log` | Recent commit history |
 | `git_branch_list` | List branches |
+| `git_branch_create` | Create a branch without checking it out |
+| `git_branch_delete` | Delete a local branch (safe against current branch) |
 | `git_checkout` | Checkout branch/tag/commit |
 | `git_pull` | Pull from remote |
-| `git_push` | Push to remote |
+| `git_push` | Push to remote (branches + optional `--tags`) |
+| `git_fetch` | Fetch from remote without merging |
+| `git_reset` | Reset HEAD to ref (soft/mixed/hard) |
 | `git_stash` | Stash operations (push/pop/list/drop/clear) |
 | `git_remote_list` | List configured remotes |
 | `git_tag_list` | List tags |
+| `git_tag_create` | Create an annotated or lightweight tag |
+| `git_tag_delete` | Delete a local tag |
+| `git_describe` | Derive a human-readable version string from a commit |
+| `git_revert` | Create a revert commit (merge-safe recovery) |
+| `git_rebase` | Rebase current branch onto another ref (non-interactive only) |
+| `git_archive` | Produce a tarball or zip of a tree at a given ref |
+| `git_config_get` | Read a single git config key |
+| `git_config_set` | Set a single git config key (allowlisted keys only) |
+| `git_restore` | Revert working-tree changes for files |
+| `git_clean_dry_run` | List files `git clean -fd` would remove (read-only) |
+| `git_reflog` | Read reflog entries for HEAD or a specific ref |
 | `git_show` | Show commit details |
-| `git_branch_delete` | Delete a local branch (safe against current branch) |
-| `git_fetch` | Fetch from remote without merging |
-| `git_reset` | Reset HEAD to ref (soft/mixed/hard) |
 | `git_worktree_list` | List worktrees with parsed branch / detached / locked / prunable flags |
 | `git_worktree_add` | Add a worktree on a new or existing branch |
 | `git_worktree_remove` | Remove a worktree; returns the freed branch name for optional cleanup |
 
-### github-tools (2 tools)
+### github-tools (17 tools)
 
 | Tool | Description |
 |------|-------------|
 | `gh_repo_from_origin` | Get OWNER/REPO from local git remote |
 | `gh_workflow_list` | List GitHub Actions workflow runs |
+| `github_release_create` | Create a GitHub release (defaults to draft mode) |
+| `github_release_edit` | Edit an existing release (use `draft=false` to publish) |
+| `github_release_delete` | Delete a release (requires exact `tag_name` match) |
+| `github_release_upload_asset` | Upload a single asset to an existing release |
+| `github_release_delete_asset` | Remove an asset from a release (requires exact `asset_name` match) |
+| `github_workflow_dispatch` | Trigger a `workflow_dispatch`-enabled workflow |
+| `github_workflow_run_wait` | Block until a workflow run reaches a terminal state |
+| `github_workflow_run_rerun` | Re-run a failed or cancelled workflow run |
+| `github_workflow_run_cancel` | Cancel an in-progress workflow run |
+| `github_check_runs_for_sha` | List check runs for an arbitrary commit SHA |
+| `github_branch_protection_get` | Read branch protection rules for a branch |
+| `github_pr_label_add` | Add labels to a pull request |
+| `github_pr_label_remove` | Remove labels from a pull request |
+| `github_pr_request_review` | Request review from users or teams on a PR |
+| `github_pr_auto_merge` | Toggle auto-merge on a pull request |
 
 ### dotnet-tools (19 tools)
 
@@ -201,6 +235,18 @@ Then grant tool permissions in your `settings.json` (user or project level):
 | `local_first_pass` | Compress text via local LLM |
 | `extract_json` | Extract structured JSON from text |
 | `map_project_structure` | Map directory structure |
+
+### python-tools (7 tools)
+
+| Tool | Description |
+|------|-------------|
+| `wheel_inspect` | Read METADATA, version, and entry points from a wheel |
+| `sdist_inspect` | Read PKG-INFO and file manifest from a source distribution |
+| `python_smoke_install` | Create throwaway venv, install wheel, run commands (cross-platform) |
+| `uv_build` | Build Python distributions with uv (clean+build+collect) |
+| `pytest_run` | Run pytest with structured output (typed counts + failure details) |
+| `ruff` | Run ruff linter (`mode="check"`) or formatter (`mode="format"`) |
+| `coverage` | Run tests under coverage and return typed coverage summary |
 
 ### rust-tools (4 tools)
 
@@ -254,6 +300,9 @@ As an alternative to `claude mcp add`, you can configure servers directly in `~/
     },
     "template-sync-tools": {
       "command": "mcp-template-sync-tools"
+    },
+    "python-tools": {
+      "command": "mcp-python-tools"
     }
   }
 }
