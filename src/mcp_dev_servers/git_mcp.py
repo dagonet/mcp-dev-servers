@@ -10,6 +10,7 @@ Tools for interacting with Git repositories:
 import shutil
 import os
 import json
+import hashlib
 import time
 import subprocess
 import signal
@@ -567,7 +568,8 @@ async def git_pull(repo_path: str, remote: str = "origin", branch: str | None = 
 
 @mcp.tool()
 async def git_push(repo_path: str, remote: str = "origin", branch: str | None = None,
-                   set_upstream: bool = False, force: bool = False, delete: bool = False) -> str:
+                   set_upstream: bool = False, force: bool = False, delete: bool = False,
+                   tags: bool = False) -> str:
     """
     Push changes to remote.
 
@@ -580,6 +582,7 @@ async def git_push(repo_path: str, remote: str = "origin", branch: str | None = 
                if upstream changed since last fetch)
         delete: If True, append --delete to remove the remote branch. Requires branch
                 to be set. Ignores set_upstream (no upstream to set on a deleted ref).
+        tags: If True, append --tags to push all tags alongside the branch.
 
     Returns:
         JSON with exit_code and output
@@ -594,6 +597,8 @@ async def git_push(repo_path: str, remote: str = "origin", branch: str | None = 
         cmd.append("--force-with-lease")
     if delete:
         cmd.append("--delete")
+    if tags:
+        cmd.append("--tags")
     cmd.append(remote)
     if branch:
         cmd.append(branch)
@@ -761,6 +766,198 @@ async def git_show(repo_path: str, ref: str = "HEAD") -> str:
         "commit": commit,
         "stderr": res["stderr"],
     }, ensure_ascii=False)
+
+
+@mcp.tool()
+async def git_tag_create(
+    repo_path: str, name: str, ref: str = "HEAD",
+    message: str | None = None, force: bool = False,
+) -> str:
+    """Create a git tag at a specified ref (annotated or lightweight).
+    For annotated tags, pass a message. Refuses to clobber existing tag unless force=True."""
+    if not name:
+        return json.dumps({"error": "tag name required"}, ensure_ascii=False)
+    if not force:
+        existing = run_git(["tag", "-l", name], cwd=repo_path, timeout_s=10)
+        if existing["stdout"].strip():
+            return json.dumps({"error": f"tag '{name}' already exists. Use force=true to overwrite."}, ensure_ascii=False)
+    cmd = ["tag"]
+    if force: cmd.append("-f")
+    if message is not None: cmd.extend(["-a", "-m", message])
+    cmd.extend([name, ref])
+    res = run_git(cmd, cwd=repo_path, timeout_s=20)
+    tag_sha = None
+    if res["exit_code"] == 0:
+        sha_res = run_git(["rev-parse", f"refs/tags/{name}"], cwd=repo_path, timeout_s=10)
+        if sha_res["exit_code"] == 0: tag_sha = sha_res["stdout"].strip()
+    return json.dumps({"exit_code": res["exit_code"], "tag_sha": tag_sha, "name": name, "annotated": message is not None, "stderr": res["stderr"]}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def git_tag_delete(repo_path: str, name: str) -> str:
+    """Delete a local git tag. Local-only — does not touch remotes."""
+    if not name: return json.dumps({"error": "tag name required"}, ensure_ascii=False)
+    res = run_git(["tag", "-d", name], cwd=repo_path, timeout_s=10)
+    return json.dumps({"exit_code": res["exit_code"], "deleted": res["exit_code"] == 0, "stderr": res["stderr"]}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def git_describe(repo_path: str, ref: str = "HEAD", tags: bool = True, dirty: bool = False) -> str:
+    """Derive a human-readable version string from a commit. Wraps git describe --tags."""
+    cmd = ["describe"];
+    if tags: cmd.append("--tags")
+    if dirty: cmd.append("--dirty")
+    cmd.append(ref)
+    res = run_git(cmd, cwd=repo_path, timeout_s=10)
+    return json.dumps({"exit_code": res["exit_code"], "description": res["stdout"].strip(), "stderr": res["stderr"]}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def git_archive(repo_path: str, ref: str, output_path: str, format: str = "tar.gz", prefix: str | None = None) -> str:
+    """Produce a tarball or zip of a tree at a given ref."""
+    valid = {"tar", "tar.gz", "zip"}
+    if format not in valid: return json.dumps({"error": f"format must be one of {valid}"}, ensure_ascii=False)
+    cmd = ["archive"]
+    if format == "tar.gz": cmd.extend(["--format=tar.gz"])
+    elif format == "zip": cmd.extend(["--format=zip"])
+    else: cmd.extend(["--format=tar"])
+    if prefix: cmd.extend(["--prefix", prefix])
+    cmd.extend(["--output", output_path, ref])
+    res = run_git(cmd, cwd=repo_path, timeout_s=60)
+    size_bytes = None; sha256 = None
+    if res["exit_code"] == 0:
+        try:
+            size_bytes = os.path.getsize(output_path)
+            h = hashlib.sha256()
+            with open(output_path, "rb") as f:
+                for chunk in iter(lambda: f.read(65536), b""): h.update(chunk)
+            sha256 = h.hexdigest()
+        except OSError: pass
+    return json.dumps({"exit_code": res["exit_code"], "path": output_path, "size_bytes": size_bytes, "sha256": sha256, "stderr": res["stderr"]}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def git_revert(repo_path: str, ref: str, no_commit: bool = False, mainline: int | None = None) -> str:
+    """Create a revert commit for a given SHA. Merge-safe recovery primitive."""
+    if not ref: return json.dumps({"error": "ref required"}, ensure_ascii=False)
+    cmd = ["revert", "--no-edit"]
+    if no_commit: cmd.append("--no-commit")
+    if mainline is not None: cmd.extend(["-m", str(mainline)])
+    cmd.append(ref)
+    res = run_git(cmd, cwd=repo_path, timeout_s=30)
+    commit_sha = None
+    if res["exit_code"] == 0 and not no_commit:
+        sha_res = run_git(["rev-parse", "HEAD"], cwd=repo_path, timeout_s=10)
+        if sha_res["exit_code"] == 0: commit_sha = sha_res["stdout"].strip()
+    return json.dumps({"exit_code": res["exit_code"], "commit_sha": commit_sha, "stderr": res["stderr"]}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def git_rebase(repo_path: str, onto: str, upstream: str | None = None, autostash: bool = False) -> str:
+    """Rebase current branch onto another ref (non-interactive only)."""
+    if not onto: return json.dumps({"error": "onto ref required"}, ensure_ascii=False)
+    if "interactive" in onto.lower() or onto.startswith("-i"):
+        return json.dumps({"error": "interactive rebase not supported via MCP"}, ensure_ascii=False)
+    cmd = ["rebase", "--onto", onto]
+    if autostash: cmd.append("--autostash")
+    if upstream: cmd.append(upstream)
+    env = os.environ.copy()
+    env.update({"GIT_TERMINAL_PROMPT": "0", "GIT_PAGER": "cat", "PAGER": "cat", "LC_ALL": "C", "GIT_SEQUENCE_EDITOR": "true", "GIT_EDITOR": "false"})
+    exe = _git_exe(); full_cmd = [exe] + cmd; start = time.time()
+    p = subprocess.Popen(full_cmd, cwd=repo_path, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, shell=False, creationflags=_SUBPROCESS_FLAGS)
+    try:
+        out, err = p.communicate(timeout=60); exit_code = p.returncode; timed_out = False
+    except subprocess.TimeoutExpired:
+        _kill_process_tree(p.pid); exit_code = 124; out = ""; err = f"Timed out after 60s"; timed_out = True
+    conflicts = []
+    if exit_code != 0 and out:
+        for line in out.splitlines():
+            if line.startswith("CONFLICT"): conflicts.append(line.strip())
+    head_sha = None
+    if exit_code == 0:
+        sha_res = run_git(["rev-parse", "HEAD"], cwd=repo_path, timeout_s=10)
+        if sha_res["exit_code"] == 0: head_sha = sha_res["stdout"].strip()
+    return json.dumps({"exit_code": exit_code, "head_sha": head_sha, "conflicts": conflicts, "stderr": err, "timed_out": timed_out}, ensure_ascii=False)
+
+
+_CONFIG_SET_ALLOWLIST = {"user.name", "user.email", "user.signingkey", "commit.gpgsign", "tag.gpgsign", "push.default", "pull.rebase"}
+_CONFIG_SET_WILDCARD_PREFIXES = ("branch.",)
+
+def _config_key_allowed(key: str) -> bool:
+    if key in _CONFIG_SET_ALLOWLIST: return True
+    for prefix in _CONFIG_SET_WILDCARD_PREFIXES:
+        if key.startswith(prefix): return key.endswith(".remote") or key.endswith(".merge")
+    return False
+
+
+@mcp.tool()
+async def git_config_get(repo_path: str, key: str, scope: str = "local") -> str:
+    """Read a single git config key. Read-only, no restrictions."""
+    valid = {"local", "global", "system"}
+    if scope not in valid: return json.dumps({"error": f"scope must be one of {valid}"}, ensure_ascii=False)
+    if not key: return json.dumps({"error": "key required"}, ensure_ascii=False)
+    res = run_git(["config", f"--{scope}", "--get", key], cwd=repo_path, timeout_s=10)
+    return json.dumps({"exit_code": res["exit_code"], "key": key, "value": res["stdout"].strip() if res["exit_code"] == 0 else None, "scope": scope, "stderr": res["stderr"]}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def git_config_set(repo_path: str, key: str, value: str, scope: str = "local") -> str:
+    """Set a single git config key (allowlisted keys only)."""
+    valid = {"local", "global", "system"}
+    if scope not in valid: return json.dumps({"error": f"scope must be one of {valid}"}, ensure_ascii=False)
+    if not key: return json.dumps({"error": "key required"}, ensure_ascii=False)
+    if not _config_key_allowed(key):
+        return json.dumps({"error": f"key '{key}' is not in the allowed set for git_config_set. Allowed keys: user.name, user.email, user.signingkey, commit.gpgsign, tag.gpgsign, push.default, pull.rebase, branch.*.remote, branch.*.merge"}, ensure_ascii=False)
+    res = run_git(["config", f"--{scope}", key, value], cwd=repo_path, timeout_s=10)
+    return json.dumps({"exit_code": res["exit_code"], "key": key, "value": value, "scope": scope, "stderr": res["stderr"]}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def git_branch_create(repo_path: str, name: str, ref: str = "HEAD", track: str | None = None) -> str:
+    """Create a branch at a ref without checking it out."""
+    if not name: return json.dumps({"error": "branch name required"}, ensure_ascii=False)
+    cmd = ["branch", name, ref]
+    if track: cmd.extend(["--track", track])
+    res = run_git(cmd, cwd=repo_path, timeout_s=10)
+    target_sha = None
+    if res["exit_code"] == 0:
+        sha_res = run_git(["rev-parse", name], cwd=repo_path, timeout_s=10)
+        if sha_res["exit_code"] == 0: target_sha = sha_res["stdout"].strip()
+    return json.dumps({"exit_code": res["exit_code"], "name": name, "target_sha": target_sha, "stderr": res["stderr"]}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def git_restore(repo_path: str, paths: list[str], staged: bool = False, source: str | None = None) -> str:
+    """Revert working-tree changes for files. Wraps git restore."""
+    if not paths: return json.dumps({"error": "paths required"}, ensure_ascii=False)
+    cmd = ["restore"]
+    if staged: cmd.append("--staged")
+    if source: cmd.extend(["--source", source])
+    cmd.extend(["--"] + paths)
+    res = run_git(cmd, cwd=repo_path, timeout_s=30)
+    return json.dumps({"exit_code": res["exit_code"], "restored_files": paths, "stderr": res["stderr"]}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def git_clean_dry_run(repo_path: str, paths: list[str] | None = None) -> str:
+    """List files that git clean -fd would remove without removing them."""
+    cmd = ["clean", "--dry-run", "-d", "-f"]
+    if paths: cmd.extend(["--"] + paths)
+    res = run_git(cmd, cwd=repo_path, timeout_s=10)
+    would_remove = [p for p in res["stdout"].strip().splitlines() if p]
+    return json.dumps({"exit_code": res["exit_code"], "would_remove": would_remove, "stderr": res["stderr"]}, ensure_ascii=False)
+
+
+@mcp.tool()
+async def git_reflog(repo_path: str, ref: str = "HEAD", limit: int = 20) -> str:
+    """Read the reflog for HEAD or a specific ref."""
+    res = run_git(["reflog", f"-{limit}", "--format=%H|%gs", ref], cwd=repo_path, timeout_s=10)
+    entries = []
+    for i, line in enumerate(res["stdout"].strip().splitlines()):
+        if not line: continue
+        parts = line.split("|", 1)
+        entries.append({"index": i, "sha": parts[0] if parts else "", "message": parts[1] if len(parts) > 1 else ""})
+    return json.dumps({"exit_code": res["exit_code"], "ref": ref, "entries": entries, "stderr": res["stderr"]}, ensure_ascii=False)
 
 
 # -------------------------
