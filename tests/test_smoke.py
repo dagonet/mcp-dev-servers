@@ -1,16 +1,17 @@
-"""Import-and-registration smoke tests for all 6 MCP servers."""
+"""Import-and-registration smoke tests for all 7 MCP servers."""
 
 import importlib
 
 import pytest
 
 SERVERS = [
-    ("mcp_dev_servers.git_mcp", 22),
-    ("mcp_dev_servers.github_mcp", 2),
+    ("mcp_dev_servers.git_mcp", 34),
+    ("mcp_dev_servers.github_mcp", 17),
     ("mcp_dev_servers.dotnet_mcp", 19),
     ("mcp_dev_servers.ollama_mcp", 6),
     ("mcp_dev_servers.rust_mcp", 4),
     ("mcp_dev_servers.template_sync_mcp", 8),
+    ("mcp_dev_servers.python_tools_mcp", 7),
 ]
 
 

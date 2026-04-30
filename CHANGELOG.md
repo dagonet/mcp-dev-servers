@@ -8,7 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- `git-tools`: 3 worktree tools — `git_worktree_list`, `git_worktree_add`, `git_worktree_remove` — bringing `git-tools` from 19 to 22 tools and the package total from 58 to 61. ([PR #4](https://github.com/dagonet/mcp-dev-servers/pull/4))
+- `git-tools`: 12 new tools — `git_tag_create`, `git_tag_delete`, `git_describe`, `git_archive`, `git_revert`, `git_rebase` (non-interactive only), `git_config_get`, `git_config_set` (with key allowlist), `git_branch_create`, `git_restore`, `git_clean_dry_run`, `git_reflog` — bringing `git-tools` from 22 to 34 tools. `git_push` now accepts a `tags` parameter for pushing tags alongside branches.
+- `github-tools`: 15 new tools — `github_release_create`, `github_release_edit` (merged publish + update), `github_release_delete` (name-match guard), `github_release_upload_asset`, `github_release_delete_asset` (name-match guard), `github_workflow_dispatch`, `github_workflow_run_wait`, `github_workflow_run_rerun`, `github_workflow_run_cancel`, `github_check_runs_for_sha`, `github_branch_protection_get`, `github_pr_label_add`, `github_pr_label_remove`, `github_pr_request_review`, `github_pr_auto_merge` — bringing `github-tools` from 2 to 17 tools.
+- `python-tools`: New MCP server with 7 tools — `wheel_inspect`, `sdist_inspect`, `python_smoke_install`, `uv_build`, `pytest_run`, `ruff` (check + format in one tool), `coverage` (merged collect + report). Registered as `mcp-python-tools` console script.
+- Package total: 61 → 95 tools across 7 servers. ([PR #7](https://github.com/dagonet/mcp-dev-servers/pull/7))
 
 ### Changed
 - README intro now leads with the outcome ("Give Claude Code N tools that…") and a worked example, ahead of the prerequisites/install sections. ([PR #3](https://github.com/dagonet/mcp-dev-servers/pull/3))

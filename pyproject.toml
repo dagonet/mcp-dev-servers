@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "mcp-dev-servers"
 version = "0.1.0"
-description = "FastMCP servers for Claude Code: git, GitHub, .NET, Ollama, Rust, template-sync"
+description = "FastMCP servers for Claude Code: git, GitHub, .NET, Ollama, Rust, template-sync, Python"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
@@ -25,6 +25,7 @@ github = []
 dotnet = []
 rust = []
 template-sync = []
+python-tools = []
 dev = ["pytest", "build", "twine"]
 
 [project.scripts]
@@ -34,6 +35,7 @@ mcp-dotnet-tools = "mcp_dev_servers.dotnet_mcp:main"
 mcp-ollama-tools = "mcp_dev_servers.ollama_mcp:main"
 mcp-rust-tools = "mcp_dev_servers.rust_mcp:main"
 mcp-template-sync-tools = "mcp_dev_servers.template_sync_mcp:main"
+mcp-python-tools = "mcp_dev_servers.python_tools_mcp:main"
 
 [project.urls]
 Homepage = "https://github.com/dagonet/mcp-dev-servers"
