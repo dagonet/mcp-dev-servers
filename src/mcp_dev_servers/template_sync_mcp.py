@@ -184,9 +184,37 @@ def _get_template_dir(manifest: dict) -> pathlib.Path:
     return repo / "templates" / manifest["variant"]
 
 
+# Manifest paths copied from the toolkit repo root rather than from
+# templates/<variant>/. Shared hook scripts live at <repo>/hooks/ and are
+# copied by the setup script from there, so they must be resolved against the
+# repo root -- otherwise sync looks under templates/<variant>/hooks/, finds
+# nothing, and falsely reports them TEMPLATE_DELETED.
+_ROOT_TRACKED_PREFIXES = ("hooks/",)
+
+
+def _is_root_tracked(rel_path: str) -> bool:
+    """True if rel_path is tracked from the repo root, not the variant dir."""
+    norm = _normalize_path(rel_path)
+    return any(norm.startswith(prefix) for prefix in _ROOT_TRACKED_PREFIXES)
+
+
 def _template_file_path(manifest: dict, rel_path: str) -> pathlib.Path:
-    """Get full path to a template file."""
+    """Get full path to a template file.
+
+    Most files live under templates/<variant>/, but root-tracked paths
+    (e.g. shared hooks/) are resolved against the toolkit repo root.
+    """
+    if _is_root_tracked(rel_path):
+        return _resolve_path(manifest["templateRepo"]) / _normalize_path(rel_path)
     return _get_template_dir(manifest) / rel_path
+
+
+def _template_git_path(manifest: dict, rel_path: str) -> str:
+    """Repo-root-relative path of a template file (for `git show`)."""
+    norm = _normalize_path(rel_path)
+    if _is_root_tracked(norm):
+        return norm
+    return f"templates/{manifest.get('variant', '')}/{norm}"
 
 
 def _scan_template_files(template_dir: pathlib.Path) -> list[str]:
@@ -346,12 +374,11 @@ async def template_load_manifest(project_path: str) -> str:
     if version < 2:
         warnings.append("Migrating v1 manifest to v2 -- will compute localHash and templateRawHash fields")
         placeholders = manifest.get("placeholders", {})
-        template_dir = _get_template_dir(manifest)
         files = manifest.get("files", {})
 
         for rel_path, entry in files.items():
             # Compute templateRawHash from current template file
-            tpl_content = _read_file(template_dir / rel_path)
+            tpl_content = _read_file(_template_file_path(manifest, rel_path))
             if tpl_content is not None:
                 entry["templateRawHash"] = _sha256(tpl_content)
             else:
@@ -428,7 +455,7 @@ async def template_compute_status(
     }
 
     for rel_path, entry in manifest.get("files", {}).items():
-        tpl_content = _read_file(template_dir / rel_path)
+        tpl_content = _read_file(_template_file_path(manifest, rel_path))
 
         if tpl_content is None:
             files_status[rel_path] = {"status": "TEMPLATE_DELETED"}
@@ -527,11 +554,10 @@ async def template_get_diff(
         return json.dumps({"error": errors[0]}, ensure_ascii=False)
 
     placeholders = manifest.get("placeholders", {})
-    template_dir = _get_template_dir(manifest)
     last_synced = manifest.get("lastSynced", "")
 
     # Read current template content (post-replacement)
-    tpl_raw = _read_file(template_dir / file_path)
+    tpl_raw = _read_file(_template_file_path(manifest, file_path))
     if tpl_raw is None:
         return json.dumps({"error": f"Template file not found: {file_path}"}, ensure_ascii=False)
     tpl_current = _apply_placeholders(tpl_raw, placeholders)
@@ -544,8 +570,7 @@ async def template_get_diff(
     # Reconstruct base (common ancestor) via git show
     base_content = None
     if last_synced:
-        variant = manifest.get("variant", "")
-        git_path = f"templates/{variant}/{file_path}"
+        git_path = _template_git_path(manifest, file_path)
         base_raw = _git_show_file(_template_repo_resolved(manifest), last_synced, git_path)
         if base_raw is not None:
             base_content = _apply_placeholders(base_raw, placeholders)
@@ -642,10 +667,9 @@ async def template_apply_file(
         return json.dumps({"error": errors[0]}, ensure_ascii=False)
 
     placeholders = manifest.get("placeholders", {})
-    template_dir = _get_template_dir(manifest)
 
     # Read current template content
-    tpl_raw = _read_file(template_dir / file_path)
+    tpl_raw = _read_file(_template_file_path(manifest, file_path))
     tpl_replaced = _apply_placeholders(tpl_raw, placeholders) if tpl_raw else ""
     tpl_raw_hash = _sha256(tpl_raw) if tpl_raw else ""
     tpl_hash = _sha256(tpl_replaced) if tpl_replaced else ""
