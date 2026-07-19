@@ -56,10 +56,46 @@ def _read_file(path: pathlib.Path) -> str | None:
 
 
 def _write_file_atomic(path: pathlib.Path, content: str) -> None:
-    """Write file atomically via temp + rename."""
+    """Write file atomically via temp + rename.
+
+    newline="" disables universal-newline translation so template LF content
+    lands as LF on Windows too (text-mode default would produce CRLF churn
+    in every synced consumer — downstream finding 2026-07-19 #5).
+    """
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(content, encoding="utf-8")
+    tmp.write_text(content, encoding="utf-8", newline="")
     os.replace(str(tmp), str(path))
+
+
+# --- PROJECT-CUSTOM region (downstream finding 2026-07-19 #2) ---------------
+# Templates may end with a sentinel region that is PROJECT-owned:
+#   <!-- PROJECT-CUSTOM:BEGIN ... -->
+#   ...project content...
+#   <!-- PROJECT-CUSTOM:END -->
+# Region handling activates only when BOTH the template and the project file
+# carry the markers. Stored manifest hashes remain FULL-content (backward
+# compatible); the region influences classification via post-classification
+# reclassification and apply-time splicing only.
+
+CUSTOM_REGION_BEGIN = "<!-- PROJECT-CUSTOM:BEGIN"
+CUSTOM_REGION_END = "PROJECT-CUSTOM:END -->"
+
+
+def _split_custom_region(content: str) -> tuple[str, str | None]:
+    """Split content into (template_part, region_block).
+
+    region_block spans from the BEGIN marker through the END marker inclusive.
+    Requires BEGIN before END; absent or malformed markers return
+    (content, None) — legacy full-file behavior.
+    """
+    begin = content.find(CUSTOM_REGION_BEGIN)
+    if begin == -1:
+        return content, None
+    end = content.find(CUSTOM_REGION_END, begin)
+    if end == -1:
+        return content, None
+    end += len(CUSTOM_REGION_END)
+    return content[:begin] + content[end:], content[begin:end]
 
 
 def _normalize_path(p: str) -> str:
@@ -493,6 +529,21 @@ async def template_compute_status(
         else:
             status = "CONFLICT"
 
+        # PROJECT-CUSTOM region reclassification: when BOTH sides carry the
+        # markers and the content OUTSIDE the region is identical, the only
+        # difference is project-owned region content — not drift.
+        #   PROJECT_CUSTOM -> UP_TO_DATE  (region-only project edit)
+        #   CONFLICT       -> AUTO_UPDATE (applying the template is a no-op
+        #                     outside the region; apply splices the project
+        #                     region back and refreshes stale manifest hashes)
+        region_reclassified = False
+        if proj_content is not None and status in ("PROJECT_CUSTOM", "CONFLICT"):
+            tpl_part, tpl_region = _split_custom_region(tpl_replaced)
+            proj_part, proj_region = _split_custom_region(proj_content)
+            if tpl_region is not None and proj_region is not None and tpl_part == proj_part:
+                status = "UP_TO_DATE" if status == "PROJECT_CUSTOM" else "AUTO_UPDATE"
+                region_reclassified = True
+
         summary[status.lower()] += 1
         files_status[rel_path] = {
             "status": status,
@@ -502,6 +553,7 @@ async def template_compute_status(
             "template_hash_old": tpl_hash_old,
             "local_hash_current": proj_hash_current,
             "local_hash_at_sync": local_hash_at_sync,
+            "region_reclassified": region_reclassified,
         }
 
     # Detect new template files not in manifest
@@ -618,7 +670,26 @@ async def template_get_diff(
         result["has_changes"] = len(diff) > 0
 
     elif diff_type == "three_way":
-        merge = _three_way_merge(base_content, tpl_current, proj_current)
+        # PROJECT-CUSTOM region: when both template and project carry the
+        # markers, exclude the region from the merge (it is project-owned and
+        # must never conflict) and reattach the project's region to the
+        # merged output. Pure diff displays above stay full-content.
+        merge_base, merge_tpl, merge_proj = base_content, tpl_current, proj_current
+        reattach_region = None
+        _tpl_part, tpl_region = _split_custom_region(tpl_current)
+        _proj_part, proj_region = _split_custom_region(proj_current)
+        if tpl_region is not None and proj_region is not None:
+            base_part, _base_region = _split_custom_region(base_content)
+            merge_base, merge_tpl, merge_proj = base_part, _tpl_part, _proj_part
+            reattach_region = proj_region
+
+        merge = _three_way_merge(merge_base, merge_tpl, merge_proj)
+        if reattach_region is not None and isinstance(merge.get("auto_merged"), str):
+            merged_text = merge["auto_merged"]
+            if merged_text and not merged_text.endswith("\n"):
+                merged_text += "\n"
+            merge["auto_merged"] = merged_text + reattach_region + "\n"
+            merge["region_reattached"] = True
         result["base_content"] = base_content
         result["template_content"] = tpl_current
         result["project_content"] = proj_current
@@ -680,10 +751,22 @@ async def template_apply_file(
         if not tpl_raw:
             return json.dumps({"error": f"Template file not found: {file_path}"}, ensure_ascii=False)
         target_path.parent.mkdir(parents=True, exist_ok=True)
-        _write_file_atomic(target_path, tpl_replaced)
-        local_hash = tpl_hash
+        # PROJECT-CUSTOM region: when both the template and the existing
+        # project file carry the markers, preserve the project's region by
+        # splicing it in place of the template's sentinel block.
+        write_content = tpl_replaced
+        region_preserved = False
+        proj_existing = _read_file(target_path)
+        if proj_existing is not None:
+            _tpl_part, tpl_region = _split_custom_region(tpl_replaced)
+            _proj_part, proj_region = _split_custom_region(proj_existing)
+            if tpl_region is not None and proj_region is not None and proj_region != tpl_region:
+                write_content = tpl_replaced.replace(tpl_region, proj_region, 1)
+                region_preserved = True
+        _write_file_atomic(target_path, write_content)
+        local_hash = _sha256(write_content)
         action = "written_from_template"
-        locally_modified = False
+        locally_modified = local_hash != tpl_hash
 
     elif source == "provided":
         if not content:
@@ -715,7 +798,8 @@ async def template_apply_file(
         "file_path": file_path,
         "action": action,
         "manifest_entry": manifest_entry,
-        "bytes_written": len(tpl_replaced.encode("utf-8")) if source == "template"
+        "region_preserved": region_preserved if source == "template" else False,
+        "bytes_written": len(write_content.encode("utf-8")) if source == "template"
             else len(content.encode("utf-8")) if source == "provided"
             else 0,
     }, ensure_ascii=False)
@@ -754,6 +838,28 @@ async def template_finalize_sync(
         new = json.loads(new_files)
     except json.JSONDecodeError:
         new = []
+
+    # Validate before touching the manifest (downstream finding 2026-07-19 #6:
+    # hand-typed hashes with stray characters silently corrupted a manifest).
+    import re as _re
+    hex64 = _re.compile(r"^[0-9a-f]{64}$")
+    invalid: list[str] = []
+    for item in applied:
+        fp = item.get("file_path", "")
+        entry = item.get("manifest_entry", {})
+        norm = _normalize_path(fp)
+        if not fp or not norm.strip("/") or ".." in norm.split("/"):
+            invalid.append(f"invalid file_path: {fp!r}")
+            continue
+        for key in ("templateHash", "templateRawHash", "localHash"):
+            value = entry.get(key, "")
+            if value and not hex64.match(value):
+                invalid.append(f"{fp}: {key} is not a 64-char lowercase hex SHA-256")
+    if invalid:
+        return json.dumps({
+            "error": "applied_files validation failed — manifest NOT written",
+            "invalid_entries": invalid,
+        }, ensure_ascii=False)
 
     files = manifest.get("files", {})
 
