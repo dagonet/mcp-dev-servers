@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-08-29
+
+### Compatibility
+
+- **`claude-code-toolkit` v2.2.0 expects `template-sync-tools` 0.2.0.** The v2.2.0 `sync-template` skill is written against this server version; the data-loss fix — a file the project deliberately kept (`template_apply_file(source="skip")`) being classified `AUTO_UPDATE` and overwritten on the next sync — ships in **0.2.0 and is NOT in 0.1.0**. There is no way to get it by syncing toolkit files: it lives in the server.
+- **Restart the MCP server after upgrading.** The fix is in the server process, not in any file the toolkit syncs. A running 0.1.0 process keeps the old classification until it is restarted.
+- **Breaking, and the reason this is 0.2.0 rather than 0.1.1:** `template_compute_status`'s per-file `locally_modified` changed **meaning**. It was "changed since the last sync"; it is now an alias of `deviates_from_template` ("deviates from the template"). The old meaning moved to the new `changed_since_sync` field. Any consumer keying on the old meaning of `locally_modified` must re-read it against the new definition — the field name and type are unchanged, so this breaks silently.
+- Versioning: `mcp-dev-servers` keeps its own semver and does **not** mirror `claude-code-toolkit` version numbers. The two ship on separate cadences; they are related by this stated contract, not by matching numbers.
+
 ### Added
 - `template-sync-tools`: **lossy-merge safety net on `three_way`**. After every merge the result is checked against base: any line present in `base`, untouched by the project, and kept by the template that does not appear **in order** in the merged output (so a stray copy elsewhere cannot mask a loss at its own position) is reported in a new `dropped_lines` list, flips `has_conflicts`/`conflict_count`, and appends a synthetic `<<<<<<< PROJECT (dropped by merge)` hunk — the merge cannot silently drop a line both sides kept. For a **conflict-free** merge of `.sh` content the tool additionally runs `bash -n`, plus `node --check` on every embedded `node -e` block (single- or double-quoted); a failure surfaces as `syntax_error` with the same conflict treatment (`syntax_checked` reports whether the check ran; a missing, unspawnable or timed-out `bash`/`node` is a graceful skip, never a silent pass). All `SequenceMatcher` uses now pass `autojunk=False` — the default classifies a line repeated more than `len(b)//100 + 1` times as junk on sequences ≥ 200 lines, which excluded every blank line from merges of `AGENT_TEAM.md` (1015 lines) and blinded the guard. Motivated by a "clean" merge that lost the closing `];` of a hook's `allowPatterns` array — hooks fail open, so the broken hook silently disabled enforcement. An insertion whose anchor line the other side replaced is likewise surfaced as an `insertion anchor lost` conflict rather than being relocated to the end of the file.
 - `template-sync-tools`: **PROJECT-CUSTOM region awareness** — when BOTH the template and the project file carry `<!-- PROJECT-CUSTOM:BEGIN/END -->` markers, the region is treated as project-owned: `template_compute_status` reclassifies region-only project edits to `UP_TO_DATE` (and a CONFLICT whose content outside the region is identical collapses to `AUTO_UPDATE`); `template_apply_file(source="template")` splices the project's region into the applied template (`region_preserved` in the result); `three_way` merges exclude the region and reattach it to the merged output (`region_reattached`). Stored manifest hashes remain full-content — no migration. Single-sided or malformed markers fall back to legacy full-file behavior. (Toolkit downstream findings 2026-07-19, finding #2)
@@ -47,5 +56,6 @@ Initial packaged release. ([PR #1](https://github.com/dagonet/mcp-dev-servers/pu
 - `requirements.txt` (superseded by `pyproject.toml`).
 - Old `src/*_mcp.py` paths at repo root (modules moved into the package).
 
-[Unreleased]: https://github.com/dagonet/mcp-dev-servers/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/dagonet/mcp-dev-servers/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/dagonet/mcp-dev-servers/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/dagonet/mcp-dev-servers/releases/tag/v0.1.0
