@@ -149,16 +149,91 @@ def test_region_only_deviation_still_reclassifies(tmp_path):
     assert f["locally_modified"] is True
 
 
-def test_region_preserving_apply_then_template_move_is_conflict(tmp_path):
-    """A region-preserving apply records locallyModified=True, so the NEXT
-    template move outside the region now reads CONFLICT (was AUTO_UPDATE).
+def _region_spliced_entry(old_tpl, proj_body):
+    """Entry as a region-preserving `source="template"` apply records it."""
+    return {
+        "templateHash": ts._sha256(old_tpl),
+        "templateRawHash": ts._sha256(old_tpl),
+        "localHash": ts._sha256(proj_body),
+        "locallyModified": True,
+        "templatePartHash": ts._sha256(ts._split_custom_region(proj_body)[0]),
+        "regionOnlyDeviation": True,
+    }
 
-    Deliberate: the recorded hashes cannot tell a spliced region apart from
-    real drift without reconstructing the synced template revision.
-    """
+
+# --- (g) region-spliced file, template moves OUTSIDE the region -> AUTO_UPDATE
+
+def test_region_spliced_file_with_template_move_outside_region_is_auto_update(tmp_path):
     old_tpl = TPL_V1 + REGION_TPL + "\n"
     new_tpl = TPL_V2 + REGION_TPL + "\n"
     proj_body = TPL_V1 + REGION_PROJ + "\n"  # written by a region-preserving apply
+    _, proj = _mk_project(
+        tmp_path, new_tpl, proj_body,
+        entry_overrides=_region_spliced_entry(old_tpl, proj_body),
+    )
+    f = _status(proj)["files"]["CLAUDE.md"]
+    assert f["status"] == "AUTO_UPDATE"
+    assert f["locally_modified"] is False
+    assert f["deviates_from_template"] is False
+    assert f["region_only"] is True
+
+    # ...and applying the template keeps the project's region.
+    res = json.loads(asyncio.run(
+        ts.template_apply_file(str(proj), "CLAUDE.md", source="template")
+    ))
+    assert res["region_preserved"] is True
+    written = (proj / "CLAUDE.md").read_text(encoding="utf-8")
+    assert REGION_PROJ in written and TPL_V2 in written
+
+
+# --- (h) template moves INSIDE its own region placeholder -------------------
+
+def test_template_move_inside_region_placeholder_keeps_project_region(tmp_path):
+    old_tpl = TPL_V1 + REGION_TPL + "\n"
+    new_region_tpl = (
+        "<!-- PROJECT-CUSTOM:BEGIN — sync-template preserves everything between these markers -->\n"
+        "<!-- New placeholder wording. -->\n"
+        "<!-- PROJECT-CUSTOM:END -->"
+    )
+    new_tpl = TPL_V1 + new_region_tpl + "\n"
+    proj_body = TPL_V1 + REGION_PROJ + "\n"
+    _, proj = _mk_project(
+        tmp_path, new_tpl, proj_body,
+        entry_overrides=_region_spliced_entry(old_tpl, proj_body),
+    )
+    f = _status(proj)["files"]["CLAUDE.md"]
+    assert f["template_changed"] is True
+    assert f["status"] == "AUTO_UPDATE"
+    assert f["region_only"] is True
+
+    res = json.loads(asyncio.run(
+        ts.template_apply_file(str(proj), "CLAUDE.md", source="template")
+    ))
+    assert res["region_preserved"] is True
+    assert REGION_PROJ in (proj / "CLAUDE.md").read_text(encoding="utf-8")
+
+
+# --- (i) genuine deviation outside the region -> CONFLICT -------------------
+
+def test_genuine_deviation_outside_region_is_conflict(tmp_path):
+    old_tpl = TPL_V1 + REGION_TPL + "\n"
+    new_tpl = TPL_V2 + REGION_TPL + "\n"
+    proj_body = TPL_V1 + "Project edit outside the region.\n" + REGION_PROJ + "\n"
+    entry = _region_spliced_entry(old_tpl, proj_body)
+    entry["regionOnlyDeviation"] = False  # the body itself deviates
+    _, proj = _mk_project(tmp_path, new_tpl, proj_body, entry_overrides=entry)
+    f = _status(proj)["files"]["CLAUDE.md"]
+    assert f["status"] == "CONFLICT"
+    assert f["deviates_from_template"] is True
+    assert f["region_only"] is False
+
+
+# --- (j) legacy entry without templatePartHash -> conservative CONFLICT -----
+
+def test_legacy_region_entry_without_template_part_hash_conflicts_with_hint(tmp_path):
+    old_tpl = TPL_V1 + REGION_TPL + "\n"
+    new_tpl = TPL_V2 + REGION_TPL + "\n"
+    proj_body = TPL_V1 + "Project edit outside the region.\n" + REGION_PROJ + "\n"
     _, proj = _mk_project(
         tmp_path, new_tpl, proj_body,
         entry_overrides={
@@ -170,9 +245,49 @@ def test_region_preserving_apply_then_template_move_is_conflict(tmp_path):
     )
     f = _status(proj)["files"]["CLAUDE.md"]
     assert f["status"] == "CONFLICT"
-    assert f["region_reclassified"] is False
-    # No keep-mine resolution: the skill can tell this from a real "keep mine".
-    assert f["resolution_at_sync"] == ""
+    assert "templatePartHash" in f["hint"]
+
+
+# --- apply records the region-aware fields ---------------------------------
+
+def test_apply_template_records_region_only_deviation(tmp_path):
+    new_tpl = TPL_V2 + REGION_TPL + "\n"
+    proj_body = TPL_V1 + REGION_PROJ + "\n"
+    _, proj = _mk_project(tmp_path, new_tpl, proj_body)
+    entry = json.loads(asyncio.run(
+        ts.template_apply_file(str(proj), "CLAUDE.md", source="template")
+    ))["manifest_entry"]
+    written = (proj / "CLAUDE.md").read_text(encoding="utf-8")
+    assert entry["templatePartHash"] == ts._sha256(ts._split_custom_region(written)[0])
+    assert entry["regionOnlyDeviation"] is True
+
+
+def test_apply_skip_records_genuine_deviation(tmp_path):
+    new_tpl = TPL_V2 + REGION_TPL + "\n"
+    proj_body = TPL_V1 + REGION_PROJ + "\n"
+    _, proj = _mk_project(tmp_path, new_tpl, proj_body)
+    entry = json.loads(asyncio.run(
+        ts.template_apply_file(str(proj), "CLAUDE.md", source="skip")
+    ))["manifest_entry"]
+    assert entry["regionOnlyDeviation"] is False  # body is still V1, template is V2
+    assert entry["templatePartHash"] == ts._sha256(ts._split_custom_region(proj_body)[0])
+
+
+def test_region_apply_round_trip_survives_next_template_move(tmp_path):
+    """End-to-end: apply + finalize, template moves, status must NOT conflict."""
+    repo, proj = _mk_project(tmp_path, TPL_V1 + REGION_TPL + "\n", TPL_V1 + REGION_PROJ + "\n")
+    applied = json.loads(asyncio.run(
+        ts.template_apply_file(str(proj), "CLAUDE.md", source="template")
+    ))
+    asyncio.run(ts.template_finalize_sync(str(proj), json.dumps([applied])))
+
+    (repo / "templates" / "general" / "CLAUDE.md").write_text(
+        TPL_V2 + REGION_TPL + "\n", encoding="utf-8", newline=""
+    )
+    f = _status(proj)["files"]["CLAUDE.md"]
+    assert f["status"] == "AUTO_UPDATE"
+    assert f["region_only"] is True
+    assert _status(proj)["summary"]["deviating"] == 0
 
 
 # --- (e) old manifest without `resolution` classifies by hash inequality ----
