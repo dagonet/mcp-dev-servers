@@ -18,7 +18,6 @@ import re
 import subprocess
 import shutil
 import tempfile
-from collections import Counter
 from difflib import SequenceMatcher, unified_diff
 from mcp.server.fastmcp import FastMCP
 
@@ -320,9 +319,13 @@ def _merge_walk(base: str, theirs: str, ours: str) -> tuple[list[str], int]:
     theirs_lines = theirs.splitlines(keepends=True)
     ours_lines = ours.splitlines(keepends=True)
 
-    # Get opcodes for base->theirs and base->ours
-    sm_theirs = SequenceMatcher(None, base_lines, theirs_lines)
-    sm_ours = SequenceMatcher(None, base_lines, ours_lines)
+    # Get opcodes for base->theirs and base->ours.
+    # autojunk=False: the default treats a line occurring more than
+    # len(b)//100 + 1 times as junk once the sequence reaches 200 lines, which
+    # on a 1000-line AGENT_TEAM.md excludes every blank line from the matcher
+    # -- distorting the merge and blinding the dropped-line guard.
+    sm_theirs = SequenceMatcher(None, base_lines, theirs_lines, autojunk=False)
+    sm_ours = SequenceMatcher(None, base_lines, ours_lines, autojunk=False)
 
     theirs_changes, theirs_inserts = _split_merge_ops(sm_theirs.get_opcodes())
     ours_changes, ours_inserts = _split_merge_ops(sm_ours.get_opcodes())
@@ -429,54 +432,95 @@ def _dropped_lines(base: str, theirs: str, ours: str, merged: str) -> list[str]:
     """Lines the merge lost silently.
 
     A line qualifies when it is present in `base`, left untouched by the
-    project (`ours`), and kept by the template (`theirs`) -- yet occurs fewer
-    times in `merged` than in `base`. Counted, not set-compared, so repeated
-    or blank lines cannot mask a real drop.
+    project (`ours`) and kept by the template (`theirs`) -- yet does not
+    appear, *in order*, in `merged`. Order-aware rather than counted: a copy
+    of the line reinserted somewhere else must not mask the loss at its own
+    position.
     """
     base_lines = base.splitlines(keepends=True)
 
     def kept_indices(other: str) -> set[int]:
         keep: set[int] = set()
-        sm = SequenceMatcher(None, base_lines, other.splitlines(keepends=True))
+        sm = SequenceMatcher(
+            None, base_lines, other.splitlines(keepends=True), autojunk=False
+        )
         for tag, i1, i2, _j1, _j2 in sm.get_opcodes():
             if tag == "equal":
                 keep.update(range(i1, i2))
         return keep
 
-    required = kept_indices(theirs) & kept_indices(ours)
-    want = Counter(base_lines[i] for i in required)
-    have = Counter(merged.splitlines(keepends=True))
-    return sorted(line for line, n in want.items() if have[line] < n)
+    required_idx = sorted(kept_indices(theirs) & kept_indices(ours))
+    if not required_idx:
+        return []
+    required = [base_lines[i] for i in required_idx]
+
+    sm = SequenceMatcher(
+        None, required, merged.splitlines(keepends=True), autojunk=False
+    )
+    matched: set[int] = set()
+    for tag, i1, i2, _j1, _j2 in sm.get_opcodes():
+        if tag == "equal":
+            matched.update(range(i1, i2))
+    return sorted({required[i] for i in range(len(required)) if i not in matched})
 
 
-# `node -e '<js>'` embedded in a hook script. Single-quoted, may span lines.
-_NODE_E_RE = re.compile(r"node\s+(?:--[\w-]+\s+)*-e\s+'(.*?)'", re.DOTALL)
+# `node -e <js>` embedded in a hook script, single- or double-quoted. Most of
+# the toolkit's hooks use double quotes, so matching only `'...'` missed them.
+_NODE_E_RE = re.compile(
+    r"""node\s+(?:--[\w-]+\s+)*-e\s+(?:'([^']*)'|"((?:[^"\\]|\\.)*)")""",
+    re.DOTALL,
+)
+# Inside double quotes bash strips a backslash only before these.
+_DQ_UNESCAPE = re.compile(r"\\([\"\\$`\n])")
 
 
-def _run_syntax_tool(cmd: list[str], label: str) -> str | None:
-    """Run a syntax checker. Returns an error string, or None when it passes
-    (or could not be run at all -- a missing/broken tool is never a failure)."""
+def _node_e_blocks(text: str) -> list[str]:
+    """Extract the JS source of every `node -e` invocation in a shell script."""
+    blocks = []
+    for single, double in _NODE_E_RE.findall(text):
+        if single:
+            blocks.append(single)
+        elif double:
+            blocks.append(
+                _DQ_UNESCAPE.sub(
+                    lambda m: "" if m.group(1) == "\n" else m.group(1), double
+                )
+            )
+    return blocks
+
+
+def _run_syntax_tool(cmd: list[str], label: str, cwd: str) -> tuple[bool, str | None]:
+    """Run a syntax checker. Returns (ran, error).
+
+    A missing tool, a spawn failure or a timeout yields (False, None) -- the
+    check could not be performed, which is never treated as a pass.
+    """
     try:
         proc = subprocess.run(
-            cmd, capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=20, creationflags=_SUBPROCESS_FLAGS,
+            cmd, cwd=cwd, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=20, stdin=subprocess.DEVNULL,
+            creationflags=_SUBPROCESS_FLAGS,
         )
     except (OSError, subprocess.SubprocessError):
-        return None
+        return False, None
     if proc.returncode == 0:
-        return None
+        return True, None
     detail = (proc.stderr or proc.stdout or "").strip().splitlines()
     first = detail[0] if detail else f"exit {proc.returncode}"
-    return f"{label}: {first}"
+    return True, f"{label}: {first}"
 
 
 def _syntax_check_shell(text: str) -> tuple[bool, str | None]:
     """Best-effort syntax check of merged shell content.
 
     Runs `bash -n` on the merged script and `node --check` on every embedded
-    `node -e '...'` block. A merge that produces a broken hook must never be
+    `node -e` block. A merge that produces a broken hook must never be
     reported clean: hooks fail open, so a JS syntax error silently disables
-    enforcement. Returns (checked, error); missing tools yield (False, None).
+    enforcement. Returns (checked, error); a tool that is missing, fails to
+    spawn or times out yields (False, None) -- never a silent pass.
+
+    Callers must only pass conflict-free content: conflict markers are not
+    valid shell and would fail every check.
     """
     bash = shutil.which("bash")
     if not bash:
@@ -485,15 +529,21 @@ def _syntax_check_shell(text: str) -> tuple[bool, str | None]:
     try:
         script = pathlib.Path(tmpdir) / "merged.sh"
         script.write_text(text, encoding="utf-8", newline="")
-        err = _run_syntax_tool([bash, "-n", str(script)], "bash -n")
+        ran, err = _run_syntax_tool([bash, "-n", script.name], "bash -n", tmpdir)
+        if not ran:
+            return False, None
         if err:
             return True, err
         node = shutil.which("node")
         if node:
-            for idx, block in enumerate(_NODE_E_RE.findall(text)):
+            for idx, block in enumerate(_node_e_blocks(text)):
                 js = pathlib.Path(tmpdir) / f"block{idx}.js"
                 js.write_text(block, encoding="utf-8", newline="")
-                err = _run_syntax_tool([node, "--check", str(js)], "node --check")
+                ran, err = _run_syntax_tool(
+                    [node, "--check", js.name], "node --check", tmpdir
+                )
+                if not ran:
+                    return False, None
                 if err:
                     return True, err
         return True, None
@@ -526,14 +576,21 @@ def _three_way_merge(base: str, theirs: str, ours: str, file_path: str = "") -> 
     dropped = _dropped_lines(base, theirs, ours, auto_merged)
     if dropped:
         conflict_count += 1
+        if auto_merged and not auto_merged.endswith("\n"):
+            auto_merged += "\n"
         auto_merged += _conflict_hunk("dropped by merge", dropped)
 
+    # Only syntax-check a clean merge: conflict markers are not valid shell,
+    # so checking a conflicted result would report a bogus syntax error and
+    # double-count the conflict.
     syntax_checked = False
     syntax_error = None
-    if _normalize_path(file_path).endswith(".sh"):
+    if conflict_count == 0 and _normalize_path(file_path).endswith(".sh"):
         syntax_checked, syntax_error = _syntax_check_shell(auto_merged)
         if syntax_error:
             conflict_count += 1
+            if auto_merged and not auto_merged.endswith("\n"):
+                auto_merged += "\n"
             auto_merged += _conflict_hunk("syntax error in merge", [syntax_error])
 
     return {

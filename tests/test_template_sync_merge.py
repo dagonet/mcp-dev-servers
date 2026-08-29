@@ -323,3 +323,72 @@ def test_non_shell_files_are_not_syntax_checked():
 
     assert merge["syntax_checked"] is False
     assert merge.get("syntax_error") is None
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
+def test_conflicted_shell_merge_reports_no_syntax_error():
+    """Conflict markers are not shell. Checking a script that already carries
+    them would fail `bash -n` every time and double-count the conflict."""
+    base = "#!/usr/bin/env bash\nX=1\necho hi\n"
+    theirs = "#!/usr/bin/env bash\nX=2\necho hi\n"
+    ours = "#!/usr/bin/env bash\nX=3\necho hi\n"
+
+    merge = ts._three_way_merge(base, theirs, ours, file_path="hooks/x.sh")
+
+    assert "<<<<<<< PROJECT\n" in merge["auto_merged"]
+    assert merge["conflict_count"] == 1
+    assert merge["syntax_checked"] is False
+    assert merge["syntax_error"] is None
+
+
+@pytest.mark.skipif(
+    shutil.which("bash") is None or shutil.which("node") is None,
+    reason="bash or node not on PATH",
+)
+def test_double_quoted_node_block_is_checked(monkeypatch):
+    """Most `node -e` blocks in the toolkit's hooks are double-quoted."""
+    lines = [
+        "#!/usr/bin/env bash\n",
+        'node -e "\n',
+        "const a = [\n",
+        "1,\n",
+        '"\n',
+    ]
+    monkeypatch.setattr(ts, "_merge_walk", lambda b, t, o: (list(lines), 0))
+    src = "".join(lines)
+
+    merge = ts._three_way_merge(src, src, src, file_path="hooks/x.sh")
+
+    assert merge["syntax_error"] and merge["syntax_error"].startswith("node --check:")
+    assert merge["has_conflicts"] is True
+
+
+# --- Guard robustness on large, blank-line-heavy files -----------------------
+
+
+def test_guard_sees_blank_lines_in_a_large_file():
+    """`SequenceMatcher(autojunk=True)` treats a line occurring more than
+    `len(b)//100 + 1` times as junk once the sequence reaches 200 elements.
+    On a 300-line doc whose template side was rewritten wholesale, that made
+    every blank line junk, `equal` came back empty, and the guard's
+    `required` set was empty -- so a dropped blank line looked clean.
+    """
+    base_lines = [ln for i in range(150) for ln in (f"unique-{i}\n", "\n")]
+    base = "".join(base_lines)
+    # Template rewrote every content line but kept the blank separators.
+    theirs = "".join(
+        f"rewritten-{i}\n" if ln.startswith("unique") else ln
+        for i, ln in enumerate(base_lines)
+    )
+    lossy = "".join(base_lines[:41] + base_lines[42:])  # one blank separator gone
+
+    assert ts._dropped_lines(base, theirs, base, lossy) == ["\n"]
+
+
+def test_guard_is_order_aware_not_just_counted():
+    """A line re-inserted elsewhere must not mask a loss at its own position."""
+    base = "a\nb\nc\nd\n"
+    # `b` is gone from its place but a stray copy appears at the end.
+    lossy = "a\nc\nd\nb\n"
+
+    assert ts._dropped_lines(base, base, base, lossy) == ["b\n"]

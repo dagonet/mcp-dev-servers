@@ -61,6 +61,50 @@ def test_scan_discovers_new_root_tracked_hooks(tmp_path):
     assert found == sorted(set(found))
 
 
+def test_compute_status_lists_new_root_hooks(tmp_path):
+    """Integration: the tool's own JSON must carry the new root hook.
+
+    The unit test above still passes if `template_compute_status` forgets to
+    pass `repo_root` -- this one pins the call site.
+    """
+    import asyncio
+    import json
+
+    repo = tmp_path / "toolkit"
+    vdir = repo / "templates" / "general"
+    vdir.mkdir(parents=True)
+    (vdir / "CLAUDE.md").write_text("# hi\n", encoding="utf-8", newline="")
+    (repo / "hooks" / "lib").mkdir(parents=True)
+    (repo / "hooks" / "retro-ledger.sh").write_text(
+        "#!/usr/bin/env bash\n", encoding="utf-8", newline=""
+    )
+    (repo / "hooks" / "lib" / "git-cmd.sh").write_text(
+        "#!/usr/bin/env bash\n", encoding="utf-8", newline=""
+    )
+
+    proj = tmp_path / "proj"
+    (proj / ".claude").mkdir(parents=True)
+    (proj / "CLAUDE.md").write_text("# hi\n", encoding="utf-8", newline="")
+    (proj / ".claude" / "template-manifest.json").write_text(
+        json.dumps({
+            "version": 2,
+            "templateRepo": str(repo),
+            "variant": "general",
+            "lastSynced": "",
+            "placeholders": {},
+            "files": {},
+        }),
+        encoding="utf-8",
+        newline="",
+    )
+
+    res = json.loads(asyncio.run(ts.template_compute_status(str(proj))))
+
+    assert "hooks/retro-ledger.sh" in res["new_template_files"]
+    assert "hooks/lib/git-cmd.sh" in res["new_template_files"]
+    assert "CLAUDE.md" in res["new_template_files"]
+
+
 def test_scan_without_repo_root_stays_variant_only(tmp_path):
     repo = tmp_path
     vdir = repo / "templates" / "rust-tauri"
