@@ -37,6 +37,55 @@ def test_hook_path_resolves_to_repo_root(tmp_path):
     assert ts._read_file(resolved) is not None  # not seen as deleted
 
 
+def test_scan_discovers_new_root_tracked_hooks(tmp_path):
+    """Discovery must walk <repo>/hooks/** too, or new hooks never surface.
+
+    A new root-tracked hook that is absent from the manifest was invisible to
+    `template_compute_status`: `_scan_template_files` only walked the variant
+    dir, so `new_template_files` never listed it and the v2 git gates shipped
+    without their sourced lib -- failing open.
+    """
+    repo = tmp_path
+    vdir = repo / "templates" / "rust-tauri"
+    vdir.mkdir(parents=True)
+    (vdir / "CLAUDE.md").write_text("# hi\n")
+    (repo / "hooks" / "lib").mkdir(parents=True)
+    (repo / "hooks" / "retro-ledger.sh").write_text("#!/usr/bin/env bash\n")
+    (repo / "hooks" / "lib" / "git-cmd.sh").write_text("#!/usr/bin/env bash\n")
+
+    found = ts._scan_template_files(vdir, repo)
+
+    assert "CLAUDE.md" in found
+    assert "hooks/retro-ledger.sh" in found
+    assert "hooks/lib/git-cmd.sh" in found
+    assert found == sorted(set(found))
+
+
+def test_scan_without_repo_root_stays_variant_only(tmp_path):
+    repo = tmp_path
+    vdir = repo / "templates" / "rust-tauri"
+    vdir.mkdir(parents=True)
+    (vdir / "CLAUDE.md").write_text("# hi\n")
+    (repo / "hooks").mkdir()
+    (repo / "hooks" / "retro-ledger.sh").write_text("#!/usr/bin/env bash\n")
+
+    assert ts._scan_template_files(vdir) == ["CLAUDE.md"]
+
+
+def test_discovered_root_hook_still_applies_against_repo_root(tmp_path):
+    """Detection change must not disturb the existing resolution behaviour."""
+    repo = tmp_path
+    (repo / "templates" / "rust-tauri").mkdir(parents=True)
+    (repo / "hooks" / "lib").mkdir(parents=True)
+    (repo / "hooks" / "lib" / "git-cmd.sh").write_text("gc_guard_off() { return 1; }\n")
+
+    m = _manifest(str(repo))
+    resolved = ts._template_file_path(m, "hooks/lib/git-cmd.sh")
+
+    assert resolved == (repo / "hooks" / "lib" / "git-cmd.sh").resolve()
+    assert ts._read_file(resolved) == "gc_guard_off() { return 1; }\n"
+
+
 def test_variant_file_resolves_to_variant_dir(tmp_path):
     repo = tmp_path
     vdir = repo / "templates" / "rust-tauri"

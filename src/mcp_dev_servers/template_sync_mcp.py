@@ -14,8 +14,11 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import subprocess
 import shutil
+import tempfile
+from collections import Counter
 from difflib import SequenceMatcher, unified_diff
 from mcp.server.fastmcp import FastMCP
 
@@ -163,6 +166,12 @@ def _run_git(args: list[str], cwd: str, timeout_s: int = 10) -> dict:
             cwd=cwd,
             capture_output=True,
             text=True,
+            # Git blobs are UTF-8. Without an explicit codec Python decodes
+            # with the locale encoding (cp1252 on Windows), so an em dash in
+            # a template came back as mojibake in the reconstructed merge base
+            # -- and got committed by anyone pasting auto_merged back.
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout_s,
             stdin=subprocess.DEVNULL,
             creationflags=_SUBPROCESS_FLAGS,
@@ -253,31 +262,60 @@ def _template_git_path(manifest: dict, rel_path: str) -> str:
     return f"templates/{manifest.get('variant', '')}/{norm}"
 
 
-def _scan_template_files(template_dir: pathlib.Path) -> list[str]:
-    """Scan template directory for all files, return relative paths."""
-    files = []
-    if not template_dir.is_dir():
-        return files
-    for p in template_dir.rglob("*"):
-        if p.is_file():
-            rel = _normalize_path(str(p.relative_to(template_dir)))
-            # Skip gitignore (merge-only, not template-owned)
-            if rel == "gitignore":
+def _scan_template_files(
+    template_dir: pathlib.Path,
+    repo_root: pathlib.Path | None = None,
+) -> list[str]:
+    """Scan for every template-owned file, return sorted relative paths.
+
+    Walks templates/<variant>/ and -- when repo_root is given -- the
+    root-tracked trees (<repo>/hooks/**, recursively, including lib/).
+    Without the second walk a newly added shared hook never surfaces in
+    `new_template_files`, so a consumer applies a settings.json that
+    references scripts it does not have and the git gates fail open.
+    """
+    files = set()
+    if template_dir.is_dir():
+        for p in template_dir.rglob("*"):
+            if p.is_file():
+                rel = _normalize_path(str(p.relative_to(template_dir)))
+                # Skip gitignore (merge-only, not template-owned)
+                if rel == "gitignore":
+                    continue
+                files.add(rel)
+    if repo_root is not None:
+        for prefix in _ROOT_TRACKED_PREFIXES:
+            root = repo_root / prefix.rstrip("/")
+            if not root.is_dir():
                 continue
-            files.append(rel)
+            for p in root.rglob("*"):
+                if p.is_file():
+                    files.add(_normalize_path(str(p.relative_to(repo_root))))
     return sorted(files)
 
 
-def _three_way_merge(base: str, theirs: str, ours: str) -> dict:
-    """
-    Line-based three-way merge.
+def _split_merge_ops(ops) -> tuple[dict, dict]:
+    """Split difflib opcodes into per-base-line changes and insertion points.
 
-    base: common ancestor (template at last sync, post-replacement)
-    theirs: template current (post-replacement)
-    ours: project current
-
-    Returns dict with auto_merged content, has_conflicts, conflict_count.
+    An `insert` opcode has `i1 == i2`: it sits *before* base line `i1` and
+    consumes no base line. Recording it against base line `i1` (which the
+    original implementation did, via `range(i1, max(i2, i1 + 1))`) made the
+    walk emit the inserted lines *in place of* a line that is still present
+    on both sides -- the silent dropped-line bug.
     """
+    changes: dict = {}
+    inserts: dict = {}
+    for tag, i1, i2, j1, j2 in ops:
+        if tag == "insert":
+            inserts[i1] = (j1, j2)
+        elif tag != "equal":
+            for i in range(i1, i2):
+                changes[i] = (tag, i1, i2, j1, j2)
+    return changes, inserts
+
+
+def _merge_walk(base: str, theirs: str, ours: str) -> tuple[list[str], int]:
+    """Line-based three-way merge walk. Returns (merged lines, conflict count)."""
     base_lines = base.splitlines(keepends=True)
     theirs_lines = theirs.splitlines(keepends=True)
     ours_lines = ours.splitlines(keepends=True)
@@ -286,32 +324,39 @@ def _three_way_merge(base: str, theirs: str, ours: str) -> dict:
     sm_theirs = SequenceMatcher(None, base_lines, theirs_lines)
     sm_ours = SequenceMatcher(None, base_lines, ours_lines)
 
-    theirs_ops = sm_theirs.get_opcodes()
-    ours_ops = sm_ours.get_opcodes()
+    theirs_changes, theirs_inserts = _split_merge_ops(sm_theirs.get_opcodes())
+    ours_changes, ours_inserts = _split_merge_ops(sm_ours.get_opcodes())
 
-    # Build change maps: for each base line index, record if theirs/ours changed it
-    theirs_changes = {}  # base_idx -> replacement lines
-    for tag, i1, i2, j1, j2 in theirs_ops:
-        if tag != "equal":
-            for i in range(i1, max(i2, i1 + 1)):
-                theirs_changes[i] = (tag, i1, i2, j1, j2)
-
-    ours_changes = {}
-    for tag, i1, i2, j1, j2 in ours_ops:
-        if tag != "equal":
-            for i in range(i1, max(i2, i1 + 1)):
-                ours_changes[i] = (tag, i1, i2, j1, j2)
-
-    # Simple approach: process by regions from theirs opcodes, detect overlaps
-    merged = []
-    conflicts = []
+    merged: list[str] = []
     conflict_count = 0
     processed_theirs = set()
     processed_ours = set()
 
+    def emit_inserts(pos: int) -> int:
+        """Emit any insertions anchored before base line `pos`."""
+        t = theirs_inserts.pop(pos, None)
+        o = ours_inserts.pop(pos, None)
+        if t is None and o is None:
+            return 0
+        t_new = theirs_lines[t[0]:t[1]] if t else []
+        o_new = ours_lines[o[0]:o[1]] if o else []
+        if t and o:
+            if t_new == o_new:
+                merged.extend(o_new)
+                return 0
+            merged.append("<<<<<<< PROJECT\n")
+            merged.extend(o_new)
+            merged.append("=======\n")
+            merged.extend(t_new)
+            merged.append(">>>>>>> TEMPLATE\n")
+            return 1
+        merged.extend(o_new if o else t_new)
+        return 0
+
     # Walk through base line by line and decide
     i = 0
     while i < len(base_lines):
+        conflict_count += emit_inserts(i)
         in_theirs = i in theirs_changes
         in_ours = i in ours_changes
 
@@ -359,23 +404,145 @@ def _three_way_merge(base: str, theirs: str, ours: str) -> dict:
             end = max(t_i2, o_i2)
             i = max(i + 1, end) if i >= min(t_i1, o_i1) else i + 1
 
-    # Handle insertions at end (beyond base length)
-    # Check if theirs added content after base
-    for tag, i1, i2, j1, j2 in sm_theirs.get_opcodes():
-        if tag == "insert" and i1 == len(base_lines) and (i1, i2) not in processed_theirs:
-            processed_theirs.add((i1, i2))
-            merged.extend(theirs_lines[j1:j2])
+    # Insertions anchored past the last base line are plain appends.
+    conflict_count += emit_inserts(len(base_lines))
 
-    for tag, i1, i2, j1, j2 in sm_ours.get_opcodes():
-        if tag == "insert" and i1 == len(base_lines) and (i1, i2) not in processed_ours:
-            processed_ours.add((i1, i2))
-            merged.extend(ours_lines[j1:j2])
+    # Anything still pending is an insertion whose anchor the walk jumped over
+    # because the other side replaced the region containing it. Emitting it
+    # inline would be a guess and appending it silently would relocate it to
+    # the end of the file -- so surface it as a conflict instead.
+    for pos in sorted(set(theirs_inserts) | set(ours_inserts)):
+        t = theirs_inserts.pop(pos, None)
+        o = ours_inserts.pop(pos, None)
+        body: list[str] = []
+        if o:
+            body.extend(ours_lines[o[0]:o[1]])
+        if t:
+            body.extend(theirs_lines[t[0]:t[1]])
+        merged.append(_conflict_hunk("insertion anchor lost", body))
+        conflict_count += 1
 
-    auto_merged = "".join(merged)
+    return merged, conflict_count
+
+
+def _dropped_lines(base: str, theirs: str, ours: str, merged: str) -> list[str]:
+    """Lines the merge lost silently.
+
+    A line qualifies when it is present in `base`, left untouched by the
+    project (`ours`), and kept by the template (`theirs`) -- yet occurs fewer
+    times in `merged` than in `base`. Counted, not set-compared, so repeated
+    or blank lines cannot mask a real drop.
+    """
+    base_lines = base.splitlines(keepends=True)
+
+    def kept_indices(other: str) -> set[int]:
+        keep: set[int] = set()
+        sm = SequenceMatcher(None, base_lines, other.splitlines(keepends=True))
+        for tag, i1, i2, _j1, _j2 in sm.get_opcodes():
+            if tag == "equal":
+                keep.update(range(i1, i2))
+        return keep
+
+    required = kept_indices(theirs) & kept_indices(ours)
+    want = Counter(base_lines[i] for i in required)
+    have = Counter(merged.splitlines(keepends=True))
+    return sorted(line for line, n in want.items() if have[line] < n)
+
+
+# `node -e '<js>'` embedded in a hook script. Single-quoted, may span lines.
+_NODE_E_RE = re.compile(r"node\s+(?:--[\w-]+\s+)*-e\s+'(.*?)'", re.DOTALL)
+
+
+def _run_syntax_tool(cmd: list[str], label: str) -> str | None:
+    """Run a syntax checker. Returns an error string, or None when it passes
+    (or could not be run at all -- a missing/broken tool is never a failure)."""
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=20, creationflags=_SUBPROCESS_FLAGS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode == 0:
+        return None
+    detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+    first = detail[0] if detail else f"exit {proc.returncode}"
+    return f"{label}: {first}"
+
+
+def _syntax_check_shell(text: str) -> tuple[bool, str | None]:
+    """Best-effort syntax check of merged shell content.
+
+    Runs `bash -n` on the merged script and `node --check` on every embedded
+    `node -e '...'` block. A merge that produces a broken hook must never be
+    reported clean: hooks fail open, so a JS syntax error silently disables
+    enforcement. Returns (checked, error); missing tools yield (False, None).
+    """
+    bash = shutil.which("bash")
+    if not bash:
+        return False, None
+    tmpdir = tempfile.mkdtemp(prefix="tplsync-syntax-")
+    try:
+        script = pathlib.Path(tmpdir) / "merged.sh"
+        script.write_text(text, encoding="utf-8", newline="")
+        err = _run_syntax_tool([bash, "-n", str(script)], "bash -n")
+        if err:
+            return True, err
+        node = shutil.which("node")
+        if node:
+            for idx, block in enumerate(_NODE_E_RE.findall(text)):
+                js = pathlib.Path(tmpdir) / f"block{idx}.js"
+                js.write_text(block, encoding="utf-8", newline="")
+                err = _run_syntax_tool([node, "--check", str(js)], "node --check")
+                if err:
+                    return True, err
+        return True, None
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def _conflict_hunk(label: str, body: list[str]) -> str:
+    lines = "".join(ln if ln.endswith("\n") else ln + "\n" for ln in body)
+    return f"<<<<<<< PROJECT ({label})\n{lines}=======\n>>>>>>> TEMPLATE\n"
+
+
+def _three_way_merge(base: str, theirs: str, ours: str, file_path: str = "") -> dict:
+    """
+    Line-based three-way merge with a lossy-merge safety net.
+
+    base: common ancestor (template at last sync, post-replacement)
+    theirs: template current (post-replacement)
+    ours: project current
+    file_path: optional relative path, used to pick a syntax checker
+
+    Returns dict with auto_merged content, has_conflicts, conflict_count,
+    dropped_lines, syntax_checked and syntax_error.
+    """
+    merged_lines, conflict_count = _merge_walk(base, theirs, ours)
+    auto_merged = "".join(merged_lines)
+
+    # Safety net: the walk must never lose a line both sides kept. If it does,
+    # refuse to present the result as clean -- the consumer would apply it.
+    dropped = _dropped_lines(base, theirs, ours, auto_merged)
+    if dropped:
+        conflict_count += 1
+        auto_merged += _conflict_hunk("dropped by merge", dropped)
+
+    syntax_checked = False
+    syntax_error = None
+    if _normalize_path(file_path).endswith(".sh"):
+        syntax_checked, syntax_error = _syntax_check_shell(auto_merged)
+        if syntax_error:
+            conflict_count += 1
+            auto_merged += _conflict_hunk("syntax error in merge", [syntax_error])
+
     return {
         "auto_merged": auto_merged,
         "has_conflicts": conflict_count > 0,
         "conflict_count": conflict_count,
+        "dropped_lines": dropped,
+        "syntax_checked": syntax_checked,
+        "syntax_error": syntax_error,
     }
 
 
@@ -557,7 +724,9 @@ async def template_compute_status(
         }
 
     # Detect new template files not in manifest
-    all_template_files = _scan_template_files(template_dir)
+    all_template_files = _scan_template_files(
+        template_dir, _resolve_path(manifest["templateRepo"])
+    )
     tracked = set(manifest.get("files", {}).keys())
     new_files = [f for f in all_template_files if f not in tracked and f not in ALWAYS_PROJECT_SPECIFIC]
 
@@ -683,7 +852,7 @@ async def template_get_diff(
             merge_base, merge_tpl, merge_proj = base_part, _tpl_part, _proj_part
             reattach_region = proj_region
 
-        merge = _three_way_merge(merge_base, merge_tpl, merge_proj)
+        merge = _three_way_merge(merge_base, merge_tpl, merge_proj, file_path=file_path)
         if reattach_region is not None and isinstance(merge.get("auto_merged"), str):
             merged_text = merge["auto_merged"]
             if merged_text and not merged_text.endswith("\n"):
@@ -810,19 +979,27 @@ async def template_finalize_sync(
     project_path: str,
     applied_files: str,
     new_files: str = "[]",
+    deleted_files: str = "[]",
 ) -> str:
     """
     Finalize a sync operation by writing the updated manifest.
     This is the ONLY tool that writes .claude/template-manifest.json.
+
+    Manifest entries are dropped when the template no longer ships the file
+    AND the project no longer has it -- otherwise a resolved TEMPLATE_DELETED
+    is re-reported by every later status call, forever.
 
     Args:
         project_path: Path to the project root directory
         applied_files: JSON array of template_apply_file results
             (each must have file_path and manifest_entry)
         new_files: JSON array of new file paths added from template (optional)
+        deleted_files: JSON array of relative paths the project deliberately
+            removed; their entries are dropped even if the template still
+            ships the file (optional)
 
     Returns:
-        JSON confirmation with counts
+        JSON confirmation with counts and the dropped entries
     """
     pp = pathlib.Path(project_path).resolve()
     manifest, errors = _load_manifest(pp)
@@ -838,6 +1015,11 @@ async def template_finalize_sync(
         new = json.loads(new_files)
     except json.JSONDecodeError:
         new = []
+
+    try:
+        deleted = json.loads(deleted_files)
+    except json.JSONDecodeError:
+        deleted = []
 
     # Validate before touching the manifest (downstream finding 2026-07-19 #6:
     # hand-typed hashes with stray characters silently corrupted a manifest).
@@ -893,6 +1075,23 @@ async def template_finalize_sync(
             }
             added_count += 1
 
+    # Drop dead entries: the template stopped shipping the file and the
+    # project removed it too, or the project deliberately deleted it.
+    explicit_deletes = {_normalize_path(p) for p in deleted if isinstance(p, str) and p}
+    dropped_entries = []
+    for fp in list(files.keys()):
+        norm = _normalize_path(fp)
+        if norm in explicit_deletes:
+            del files[fp]
+            dropped_entries.append(fp)
+            continue
+        if _template_file_path(manifest, fp).is_file():
+            continue
+        if (pp / norm).exists():
+            continue
+        del files[fp]
+        dropped_entries.append(fp)
+
     # Update lastSynced
     new_head = _git_head(_template_repo_resolved(manifest)) or manifest.get("lastSynced", "")
     manifest["lastSynced"] = new_head
@@ -910,6 +1109,8 @@ async def template_finalize_sync(
         "last_synced": new_head,
         "files_updated": updated_count,
         "files_added": added_count,
+        "files_dropped": len(dropped_entries),
+        "dropped_entries": sorted(dropped_entries),
         "manifest_written": True,
     }, ensure_ascii=False)
 
