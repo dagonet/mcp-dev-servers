@@ -57,6 +57,20 @@ def _read_file(path: pathlib.Path) -> str | None:
         return None
 
 
+def _part_hashes(proj_content: str, tpl_content: str) -> tuple[str, str]:
+    """Hash both sides with their PROJECT-CUSTOM region stripped.
+
+    Falls back to full-file content when either side lacks the markers --
+    template_apply_file only splices the region when BOTH carry them, so a
+    single-sided region is not project-owned.
+    """
+    proj_part, proj_region = _split_custom_region(proj_content)
+    tpl_part, tpl_region = _split_custom_region(tpl_content)
+    if proj_region is None or tpl_region is None:
+        proj_part, tpl_part = proj_content, tpl_content
+    return _sha256(proj_part), (_sha256(tpl_part) if tpl_content else "")
+
+
 def _write_file_atomic(path: pathlib.Path, content: str) -> None:
     """Write file atomically via temp + rename.
 
@@ -693,11 +707,13 @@ async def template_compute_status(
     template unchanged -> PROJECT_CUSTOM.
 
     Deviation is measured on the TEMPLATE PART: the file with its
-    PROJECT-CUSTOM region stripped, compared against `templatePartHash` from
-    the manifest entry (recorded by template_apply_file). A region-preserving
-    apply rewrites only the region, so it stays AUTO_UPDATE when the template
-    moves again. Entries predating `templatePartHash` fall back to whole-file
-    hash inequality (conservative: CONFLICT) and carry a `hint`.
+    PROJECT-CUSTOM region stripped. The project deviates when its current
+    template part matches NEITHER the current template's part NOR
+    `templatePartHashAtSync` (the template part at the last sync, recorded by
+    template_apply_file). A region-preserving apply rewrites only the region,
+    so it stays AUTO_UPDATE when the template moves again. Entries predating
+    `templatePartHashAtSync` fall back to whole-file hash inequality
+    (conservative: CONFLICT) and carry a `hint`.
 
     Per-file fields:
         deviates_from_template: project content OUTSIDE its PROJECT-CUSTOM
@@ -710,7 +726,11 @@ async def template_compute_status(
         changed_since_sync: project file changed since the last sync
             (compared against `localHash`)
         resolution_at_sync: "keep-mine" when the entry was registered via
-            template_apply_file(source="skip"), else ""
+            template_apply_file(source="skip"), else "". Reporting only --
+            classification is hash-based and does not read it.
+        project_file_missing: the manifest tracks the file but the project
+            does not have it (drop the entry via
+            template_finalize_sync(deleted_files=[...]) if that is intended)
         region_reclassified: true when the only difference is inside the
             PROJECT-CUSTOM region, so the status already accounts for the
             deviation (the raw deviation fields stay honest)
@@ -787,33 +807,33 @@ async def template_compute_status(
         proj_part, proj_region = (
             _split_custom_region(proj_content) if proj_content is not None else ("", None)
         )
-        if tpl_region is None or proj_region is None:
-            # Single-sided or malformed markers: apply does NOT splice, so the
-            # region is not project-owned -- fall back to full-file content.
-            tpl_part = tpl_replaced
-            proj_part = proj_content if proj_content is not None else ""
-        tpl_part_hash_new = _sha256(tpl_part)
-        proj_part_hash = _sha256(proj_part) if proj_content is not None else ""
+        # _part_hashes applies the single-sided-marker fallback, exactly as the
+        # recording side in template_apply_file does.
+        proj_part_hash, tpl_part_hash_new = _part_hashes(
+            proj_content if proj_content is not None else "", tpl_replaced
+        )
 
-        part_hash_at_sync = entry.get("templatePartHash", "")
-        part_matched_template_at_sync = bool(entry.get("regionOnlyDeviation", False))
+        tpl_part_hash_at_sync = entry.get("templatePartHashAtSync", "")
         hint = ""
-        if part_hash_at_sync:
-            deviates = not (
-                proj_part_hash == tpl_part_hash_new
-                or (part_matched_template_at_sync and proj_part_hash == part_hash_at_sync)
-            )
+        if tpl_part_hash_at_sync:
+            # The project part must match the template part of EITHER the
+            # current template or the revision it was synced against -- the
+            # latter is what keeps a region-preserving apply an AUTO_UPDATE.
+            deviates = proj_part_hash not in (tpl_part_hash_new, tpl_part_hash_at_sync)
         else:
             # Legacy entry: no recorded template part -- fall back to whole-file
             # hash inequality, which is conservative (CONFLICT over AUTO_UPDATE).
+            # An entry without templateHash has no baseline at all; comparing
+            # against the CURRENT template is the only safe reading (an empty
+            # baseline would otherwise read as "clean" and be overwritten).
             deviates = bool(entry.get("locallyModified", False)) or (
-                bool(tpl_hash_old) and proj_hash_current != tpl_hash_old
+                proj_hash_current != (tpl_hash_old or tpl_hash_new)
             )
             if deviates:
                 hint = (
-                    'entry predates templatePartHash — re-register with '
-                    'template_apply_file(source="skip") to record templatePartHash '
-                    'and get region-aware classification'
+                    'entry predates localPartHash/templatePartHashAtSync — re-register '
+                    'with template_apply_file(source="skip") to record them and get '
+                    'region-aware classification'
                 )
 
         # The project differs from the template ONLY inside its own region.
@@ -838,6 +858,8 @@ async def template_compute_status(
         #   CONFLICT       -> AUTO_UPDATE (applying the template is a no-op
         #                     outside the region; apply splices the project
         #                     region back and refreshes stale manifest hashes)
+        # Reachable for LEGACY entries only: a modern entry with part hashes
+        # never classifies a region-only difference as deviating.
         region_reclassified = False
         if proj_content is not None and status in ("PROJECT_CUSTOM", "CONFLICT"):
             if tpl_region is not None and proj_region is not None and tpl_part == proj_part:
@@ -845,7 +867,7 @@ async def template_compute_status(
                 region_reclassified = True
 
         summary[status.lower()] += 1
-        if deviates:
+        if deviates and not region_reclassified:
             summary["deviating"] += 1
         files_status[rel_path] = {
             "status": status,
@@ -855,6 +877,7 @@ async def template_compute_status(
             "changed_since_sync": changed_since_sync,
             "resolution_at_sync": resolution_at_sync,
             "region_only": region_only,
+            "project_file_missing": proj_content is None,
             "hint": hint,
             "template_hash_new": tpl_hash_new,
             "template_hash_old": tpl_hash_old,
@@ -1036,19 +1059,20 @@ async def template_apply_file(
             - "template": copy from template with placeholder replacement
             - "provided": use the content parameter as-is
             - "skip": don't change the project file, just update manifest hashes
-              ("keep mine" -- the entry records resolution="keep-mine" so a
-              later template_compute_status reports CONFLICT rather than
-              AUTO_UPDATE when the template moves again)
+              ("keep mine" -- the entry records resolution="keep-mine" for
+              reporting; the CONFLICT the next status call reports comes from
+              the recorded part hashes, not from that field)
         content: File content to write (only used when source="provided")
 
     Returns:
         JSON with the new manifest entry for this file (hashes, modification
         status, and resolution="keep-mine" for source="skip"; "template" and
         "provided" omit the key, which clears any previous resolution).
-        Every entry also carries `templatePartHash` (the project file hashed
-        with its PROJECT-CUSTOM region stripped) and `regionOnlyDeviation`
-        (whether that part matched the template) -- template_compute_status
-        needs both to tell a preserved region apart from real drift.
+        Every entry also carries `localPartHash` (the project file hashed with
+        its PROJECT-CUSTOM region stripped) and `templatePartHashAtSync` (the
+        same for the template) -- template_compute_status needs the latter to
+        tell a preserved region apart from real drift. Both fall back to
+        full-file hashes when only one side carries the markers.
     """
     pp = pathlib.Path(project_path).resolve()
     manifest, errors = _load_manifest(pp)
@@ -1114,22 +1138,15 @@ async def template_apply_file(
         else content if source == "provided"
         else (proj_content or "")
     )
-    final_part, final_region = _split_custom_region(final_content)
-    tpl_part, tpl_region_now = _split_custom_region(tpl_replaced)
-    if final_region is None or tpl_region_now is None:
-        # Single-sided markers: apply does not splice, so nothing is
-        # project-owned -- record full-file hashes (legacy behavior).
-        final_part, tpl_part = final_content, tpl_replaced
-    local_part_hash = _sha256(final_part)
-    tpl_part_hash = _sha256(tpl_part) if tpl_replaced else ""
+    local_part_hash, tpl_part_hash = _part_hashes(final_content, tpl_replaced)
 
     manifest_entry = {
         "templateHash": tpl_hash,
         "templateRawHash": tpl_raw_hash,
         "localHash": local_hash,
         "locallyModified": locally_modified,
-        "templatePartHash": local_part_hash,
-        "regionOnlyDeviation": bool(tpl_part_hash) and local_part_hash == tpl_part_hash,
+        "localPartHash": local_part_hash,
+        "templatePartHashAtSync": tpl_part_hash,
     }
     if source == "skip":
         # "Keep mine": the project deliberately deviates from this template
@@ -1168,7 +1185,10 @@ async def template_finalize_sync(
         project_path: Path to the project root directory
         applied_files: JSON array of template_apply_file results
             (each must have file_path and manifest_entry)
-        new_files: JSON array of new file paths added from template (optional)
+        new_files: JSON array of new file paths added from template (optional).
+            Entries not already applied get real hashes computed from the
+            template and the project file on disk -- never empty placeholders,
+            which would read as "no baseline" and invite an overwrite.
         deleted_files: JSON array of relative paths the project deliberately
             removed; their entries are dropped even if the template still
             ships the file (optional)
@@ -1208,7 +1228,10 @@ async def template_finalize_sync(
         if not fp or not norm.strip("/") or ".." in norm.split("/"):
             invalid.append(f"invalid file_path: {fp!r}")
             continue
-        for key in ("templateHash", "templateRawHash", "localHash", "templatePartHash"):
+        for key in (
+            "templateHash", "templateRawHash", "localHash",
+            "localPartHash", "templatePartHashAtSync",
+        ):
             value = entry.get(key, "")
             if value and not hex64.match(value):
                 invalid.append(f"{fp}: {key} is not a 64-char lowercase hex SHA-256")
@@ -1236,17 +1259,24 @@ async def template_finalize_sync(
             files[fp] = new_entry
             updated_count += 1
 
-    # Add new files
+    # Add new files. Real hashes only -- an entry with an empty templateHash
+    # has no baseline, and template_compute_status would have offered to
+    # overwrite whatever the project has there.
     added_count = 0
+    placeholders = manifest.get("placeholders", {})
     for fp in new:
         if fp not in files:
-            # These should already have been applied via template_apply_file
-            # but ensure they have an entry
+            tpl_raw = _read_file(_template_file_path(manifest, fp))
+            tpl_replaced = _apply_placeholders(tpl_raw, placeholders) if tpl_raw else ""
+            proj_content = _read_file(pp / _normalize_path(fp))
+            local_part_hash, tpl_part_hash = _part_hashes(proj_content or "", tpl_replaced)
             files[fp] = {
-                "templateHash": "",
-                "templateRawHash": "",
-                "localHash": "",
-                "locallyModified": False,
+                "templateHash": _sha256(tpl_replaced) if tpl_replaced else "",
+                "templateRawHash": _sha256(tpl_raw) if tpl_raw else "",
+                "localHash": _sha256(proj_content) if proj_content is not None else "",
+                "locallyModified": proj_content is not None and proj_content != tpl_replaced,
+                "localPartHash": local_part_hash,
+                "templatePartHashAtSync": tpl_part_hash,
             }
             added_count += 1
 

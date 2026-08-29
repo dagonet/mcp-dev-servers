@@ -68,11 +68,35 @@ def _status(proj):
     return json.loads(asyncio.run(ts.template_compute_status(str(proj))))
 
 
-def _keep_mine_entry(tpl_at_sync):
+def _part_hashes(proj_body, tpl_body):
+    """(project part, template part) hashes with the single-sided fallback."""
+    proj_part, proj_region = ts._split_custom_region(proj_body)
+    tpl_part, tpl_region = ts._split_custom_region(tpl_body)
+    if proj_region is None or tpl_region is None:
+        proj_part, tpl_part = proj_body, tpl_body
+    return ts._sha256(proj_part), ts._sha256(tpl_part)
+
+
+def _keep_mine_entry(tpl_at_sync, proj_body):
     """Manifest entry as `template_apply_file(source='skip')` records it."""
+    local_part, tpl_part = _part_hashes(proj_body, tpl_at_sync)
     return {
         "templateHash": ts._sha256(tpl_at_sync),
         "templateRawHash": ts._sha256(tpl_at_sync),
+        "localHash": ts._sha256(proj_body),
+        "locallyModified": True,
+        "localPartHash": local_part,
+        "templatePartHashAtSync": tpl_part,
+        "resolution": "keep-mine",
+    }
+
+
+def _legacy_keep_mine_entry(tpl_at_sync, proj_body):
+    """Pre-round-1 entry shape: no part hashes at all."""
+    return {
+        "templateHash": ts._sha256(tpl_at_sync),
+        "templateRawHash": ts._sha256(tpl_at_sync),
+        "localHash": ts._sha256(proj_body),
         "locallyModified": True,
         "resolution": "keep-mine",
     }
@@ -84,7 +108,7 @@ def test_keep_mine_with_changed_template_is_conflict(tmp_path):
     proj_body = TPL_V1 + "\nProject-owned paragraph.\n"
     _, proj = _mk_project(
         tmp_path, TPL_V2, proj_body,
-        entry_overrides={**_keep_mine_entry(TPL_V1), "localHash": ts._sha256(proj_body)},
+        entry_overrides=_keep_mine_entry(TPL_V1, proj_body),
     )
     f = _status(proj)["files"]["CLAUDE.md"]
     assert f["status"] == "CONFLICT"
@@ -100,7 +124,7 @@ def test_keep_mine_with_unchanged_template_is_project_custom(tmp_path):
     proj_body = TPL_V1 + "\nProject-owned paragraph.\n"
     _, proj = _mk_project(
         tmp_path, TPL_V1, proj_body,
-        entry_overrides={**_keep_mine_entry(TPL_V1), "localHash": ts._sha256(proj_body)},
+        entry_overrides=_keep_mine_entry(TPL_V1, proj_body),
     )
     f = _status(proj)["files"]["CLAUDE.md"]
     assert f["status"] == "PROJECT_CUSTOM"
@@ -117,6 +141,8 @@ def test_clean_file_with_changed_template_is_auto_update(tmp_path):
             "templateHash": ts._sha256(TPL_V1),
             "templateRawHash": ts._sha256(TPL_V1),
             "localHash": ts._sha256(TPL_V1),
+            "localPartHash": ts._sha256(TPL_V1),
+            "templatePartHashAtSync": ts._sha256(TPL_V1),
         },
     )
     f = _status(proj)["files"]["CLAUDE.md"]
@@ -124,11 +150,12 @@ def test_clean_file_with_changed_template_is_auto_update(tmp_path):
     assert f["deviates_from_template"] is False
     assert f["locally_modified"] is False
     assert f["resolution_at_sync"] == ""
+    assert f["hint"] == ""
 
 
 # --- (d) region-only deviation keeps the existing reclassification ----------
 
-def test_region_only_deviation_still_reclassifies(tmp_path):
+def test_legacy_region_only_deviation_still_reclassifies(tmp_path):
     old_tpl = TPL_V1 + REGION_TPL + "\n"
     new_tpl = TPL_V2 + REGION_TPL + "\n"
     proj_body = TPL_V2 + REGION_PROJ + "\n"
@@ -140,24 +167,28 @@ def test_region_only_deviation_still_reclassifies(tmp_path):
             "localHash": ts._sha256(old_tpl),
         },
     )
-    f = _status(proj)["files"]["CLAUDE.md"]
+    res = _status(proj)
+    f = res["files"]["CLAUDE.md"]
     assert f["status"] == "AUTO_UPDATE"
     assert f["region_reclassified"] is True
     # Raw fields stay honest: the collapse to AUTO_UPDATE is explained by
     # region_reclassified, not by pretending the file matches the template.
     assert f["deviates_from_template"] is True
     assert f["locally_modified"] is True
+    # ...but a reclassified file is not a genuine deviation for the summary.
+    assert res["summary"] == {**res["summary"], "auto_update": 1, "deviating": 0}
 
 
 def _region_spliced_entry(old_tpl, proj_body):
     """Entry as a region-preserving `source="template"` apply records it."""
+    local_part, tpl_part = _part_hashes(proj_body, old_tpl)
     return {
         "templateHash": ts._sha256(old_tpl),
         "templateRawHash": ts._sha256(old_tpl),
         "localHash": ts._sha256(proj_body),
         "locallyModified": True,
-        "templatePartHash": ts._sha256(ts._split_custom_region(proj_body)[0]),
-        "regionOnlyDeviation": True,
+        "localPartHash": local_part,
+        "templatePartHashAtSync": tpl_part,
     }
 
 
@@ -219,9 +250,10 @@ def test_genuine_deviation_outside_region_is_conflict(tmp_path):
     old_tpl = TPL_V1 + REGION_TPL + "\n"
     new_tpl = TPL_V2 + REGION_TPL + "\n"
     proj_body = TPL_V1 + "Project edit outside the region.\n" + REGION_PROJ + "\n"
-    entry = _region_spliced_entry(old_tpl, proj_body)
-    entry["regionOnlyDeviation"] = False  # the body itself deviates
-    _, proj = _mk_project(tmp_path, new_tpl, proj_body, entry_overrides=entry)
+    _, proj = _mk_project(
+        tmp_path, new_tpl, proj_body,
+        entry_overrides=_region_spliced_entry(old_tpl, proj_body),
+    )
     f = _status(proj)["files"]["CLAUDE.md"]
     assert f["status"] == "CONFLICT"
     assert f["deviates_from_template"] is True
@@ -245,12 +277,12 @@ def test_legacy_region_entry_without_template_part_hash_conflicts_with_hint(tmp_
     )
     f = _status(proj)["files"]["CLAUDE.md"]
     assert f["status"] == "CONFLICT"
-    assert "templatePartHash" in f["hint"]
+    assert "localPartHash" in f["hint"]
 
 
 # --- apply records the region-aware fields ---------------------------------
 
-def test_apply_template_records_region_only_deviation(tmp_path):
+def test_apply_template_records_part_hashes(tmp_path):
     new_tpl = TPL_V2 + REGION_TPL + "\n"
     proj_body = TPL_V1 + REGION_PROJ + "\n"
     _, proj = _mk_project(tmp_path, new_tpl, proj_body)
@@ -258,19 +290,24 @@ def test_apply_template_records_region_only_deviation(tmp_path):
         ts.template_apply_file(str(proj), "CLAUDE.md", source="template")
     ))["manifest_entry"]
     written = (proj / "CLAUDE.md").read_text(encoding="utf-8")
-    assert entry["templatePartHash"] == ts._sha256(ts._split_custom_region(written)[0])
-    assert entry["regionOnlyDeviation"] is True
+    local_part, tpl_part = _part_hashes(written, new_tpl)
+    assert entry["localPartHash"] == local_part
+    assert entry["templatePartHashAtSync"] == tpl_part
+    assert local_part == tpl_part  # region-preserving apply: parts match
+    assert "regionOnlyDeviation" not in entry
 
 
-def test_apply_skip_records_genuine_deviation(tmp_path):
+def test_apply_skip_records_deviating_part_hashes(tmp_path):
     new_tpl = TPL_V2 + REGION_TPL + "\n"
     proj_body = TPL_V1 + REGION_PROJ + "\n"
     _, proj = _mk_project(tmp_path, new_tpl, proj_body)
     entry = json.loads(asyncio.run(
         ts.template_apply_file(str(proj), "CLAUDE.md", source="skip")
     ))["manifest_entry"]
-    assert entry["regionOnlyDeviation"] is False  # body is still V1, template is V2
-    assert entry["templatePartHash"] == ts._sha256(ts._split_custom_region(proj_body)[0])
+    local_part, tpl_part = _part_hashes(proj_body, new_tpl)
+    assert entry["localPartHash"] == local_part
+    assert entry["templatePartHashAtSync"] == tpl_part
+    assert local_part != tpl_part  # body is still V1, template is V2
 
 
 def test_region_apply_round_trip_survives_next_template_move(tmp_path):
@@ -320,8 +357,112 @@ def test_apply_records_full_content_part_when_template_has_no_region(tmp_path):
     ))["manifest_entry"]
     # Not the region-stripped part -- the template carries no markers, so the
     # region is NOT project-owned as far as apply is concerned.
-    assert entry["templatePartHash"] == ts._sha256(proj_body)
-    assert entry["regionOnlyDeviation"] is False
+    assert entry["localPartHash"] == ts._sha256(proj_body)
+    assert entry["templatePartHashAtSync"] == ts._sha256(TPL_V2)
+
+
+# --- (5) mirror: template HAS markers, project does NOT ---------------------
+
+def test_template_only_markers_auto_update_writes_verbatim(tmp_path):
+    """The next sync every consumer runs: the template gains the region."""
+    new_tpl = TPL_V2 + REGION_TPL + "\n"
+    repo, proj = _mk_project(tmp_path, TPL_V1, TPL_V1)  # project has no markers
+    applied = json.loads(asyncio.run(
+        ts.template_apply_file(str(proj), "CLAUDE.md", source="template")
+    ))
+    asyncio.run(ts.template_finalize_sync(str(proj), json.dumps([applied])))
+
+    (repo / "templates" / "general" / "CLAUDE.md").write_text(
+        new_tpl, encoding="utf-8", newline=""
+    )
+    f = _status(proj)["files"]["CLAUDE.md"]
+    assert f["status"] == "AUTO_UPDATE"
+    assert f["region_only"] is False
+
+    res = json.loads(asyncio.run(
+        ts.template_apply_file(str(proj), "CLAUDE.md", source="template")
+    ))
+    assert res["region_preserved"] is False
+    assert (proj / "CLAUDE.md").read_text(encoding="utf-8") == new_tpl
+
+
+# --- (1) finalize records real hashes for new files -------------------------
+
+def test_finalize_new_files_entry_is_not_blindly_auto_updated(tmp_path):
+    repo, proj = _mk_project(tmp_path, TPL_V1, TPL_V1)
+    # A second template file the project already has, with its own content.
+    (repo / "templates" / "general" / "AGENT_TEAM.md").write_text(
+        TPL_V1, encoding="utf-8", newline=""
+    )
+    (proj / "AGENT_TEAM.md").write_text(
+        TPL_V1 + "Project-owned paragraph.\n", encoding="utf-8", newline=""
+    )
+    asyncio.run(ts.template_finalize_sync(str(proj), "[]", new_files='["AGENT_TEAM.md"]'))
+
+    (repo / "templates" / "general" / "AGENT_TEAM.md").write_text(
+        TPL_V2, encoding="utf-8", newline=""
+    )
+    f = _status(proj)["files"]["AGENT_TEAM.md"]
+    assert f["status"] != "AUTO_UPDATE"
+    assert f["deviates_from_template"] is True
+
+
+def test_legacy_entry_without_template_hash_is_not_auto_updated(tmp_path):
+    proj_body = TPL_V1 + "Project-owned paragraph.\n"
+    _, proj = _mk_project(
+        tmp_path, TPL_V2, proj_body,
+        entry_overrides={
+            "templateHash": "",
+            "templateRawHash": "",
+            "localHash": "",
+            "locallyModified": False,
+        },
+    )
+    f = _status(proj)["files"]["CLAUDE.md"]
+    assert f["status"] != "AUTO_UPDATE"
+    assert f["deviates_from_template"] is True
+
+
+def test_entry_without_template_hash_matching_template_is_auto_update(tmp_path):
+    """The same unknown-baseline rule must not block a genuinely clean file."""
+    _, proj = _mk_project(
+        tmp_path, TPL_V2, TPL_V2,
+        entry_overrides={
+            "templateHash": "",
+            "templateRawHash": "",
+            "localHash": "",
+            "locallyModified": False,
+        },
+    )
+    f = _status(proj)["files"]["CLAUDE.md"]
+    assert f["deviates_from_template"] is False
+    assert f["status"] == "AUTO_UPDATE"
+
+
+# --- (6) missing project file, CRLF ----------------------------------------
+
+def test_missing_project_file_is_flagged(tmp_path):
+    _, proj = _mk_project(tmp_path, TPL_V2, TPL_V1)
+    (proj / "CLAUDE.md").unlink()
+    f = _status(proj)["files"]["CLAUDE.md"]
+    assert f["project_file_missing"] is True
+    # Classification is unchanged by the flag: the manifest still points at the
+    # current template, so a missing file reads as a deviation, not AUTO_UPDATE.
+    assert f["deviates_from_template"] is True
+    assert f["status"] == "PROJECT_CUSTOM"
+
+
+def test_present_project_file_is_not_flagged_missing(tmp_path):
+    _, proj = _mk_project(tmp_path, TPL_V1, TPL_V1)
+    assert _status(proj)["files"]["CLAUDE.md"]["project_file_missing"] is False
+
+
+def test_crlf_project_file_matches_lf_template(tmp_path):
+    _, proj = _mk_project(tmp_path, TPL_V1, TPL_V1)
+    (proj / "CLAUDE.md").write_bytes(TPL_V1.replace("\n", "\r\n").encode("utf-8"))
+    f = _status(proj)["files"]["CLAUDE.md"]
+    assert f["status"] == "UP_TO_DATE"
+    assert f["deviates_from_template"] is False
 
 
 # --- (e) old manifest without `resolution` classifies by hash inequality ----
@@ -379,7 +520,7 @@ def test_summary_counts_deviating_files(tmp_path):
     proj_body = TPL_V1 + "\nProject-owned paragraph.\n"
     _, proj = _mk_project(
         tmp_path, TPL_V2, proj_body,
-        entry_overrides={**_keep_mine_entry(TPL_V1), "localHash": ts._sha256(proj_body)},
+        entry_overrides=_keep_mine_entry(TPL_V1, proj_body),
     )
     summary = _status(proj)["summary"]
     assert summary["conflict"] == 1
