@@ -687,13 +687,35 @@ async def template_compute_status(
     Classifies each file as: UP_TO_DATE, PROJECT_CUSTOM, AUTO_UPDATE, CONFLICT,
     TEMPLATE_DELETED. Also detects new files added to the template.
 
+    Classification keys off whether the project file DEVIATES from the template
+    revision it was synced against (`locallyModified` in the entry, or
+    local content != `templateHash`) -- NOT off whether it changed since the
+    last sync. A deviating file is never AUTO_UPDATE: template changed ->
+    CONFLICT, template unchanged -> PROJECT_CUSTOM.
+
+    Per-file fields:
+        deviates_from_template: project content differs from the template
+            revision recorded at sync time (applying the template would
+            destroy project content)
+        locally_modified: alias of deviates_from_template
+        changed_since_sync: project file changed since the last sync
+            (compared against `localHash`)
+        resolution_at_sync: "keep-mine" when the entry was registered via
+            template_apply_file(source="skip"), else ""
+        region_reclassified: true when the only difference is inside the
+            PROJECT-CUSTOM region, so the status already accounts for the
+            deviation (the raw deviation fields stay honest)
+
     Args:
         project_path: Path to the project root directory
         template_repo: Override templateRepo from manifest (optional)
         variant: Override variant from manifest (optional)
 
     Returns:
-        JSON with per-file status, new/deleted file lists, and summary counts
+        JSON with per-file status, new/deleted file lists, and summary counts,
+        including `deviating` -- a count of RAW deviation, so files whose only
+        deviation is a preserved PROJECT-CUSTOM region are included; don't
+        gate an alarm on it.
     """
     pp = pathlib.Path(project_path).resolve()
     manifest, errors = _load_manifest(pp)
@@ -711,7 +733,7 @@ async def template_compute_status(
     files_status = {}
     summary = {
         "up_to_date": 0, "project_custom": 0, "auto_update": 0,
-        "conflict": 0, "template_deleted": 0,
+        "conflict": 0, "template_deleted": 0, "deviating": 0,
     }
 
     for rel_path, entry in manifest.get("files", {}).items():
@@ -732,26 +754,33 @@ async def template_compute_status(
         # Check if template changed
         template_changed = tpl_hash_new != tpl_hash_old
 
-        # Check if project file changed (compare against localHash)
         proj_content = _read_file(pp / rel_path)
         proj_hash_current = _sha256(proj_content) if proj_content is not None else ""
 
-        # For v1 manifests without localHash, use locallyModified flag
+        # "Changed since the last sync" -- for v1 manifests without localHash,
+        # fall back to the locallyModified flag.
         local_hash_at_sync = entry.get("localHash", "")
         if local_hash_at_sync:
-            project_changed = proj_hash_current != local_hash_at_sync
+            changed_since_sync = proj_hash_current != local_hash_at_sync
         else:
-            project_changed = entry.get("locallyModified", False)
+            changed_since_sync = bool(entry.get("locallyModified", False))
+
+        # "Deviates from the template it was synced against" -- the property
+        # that decides whether applying the template would DESTROY project
+        # content. A file registered via template_apply_file(source="skip")
+        # ("keep mine") deviates while being unchanged since the last sync;
+        # classifying it off changed_since_sync reported AUTO_UPDATE and the
+        # next sync overwrote it (consumer findings 2026-08-29).
+        resolution_at_sync = entry.get("resolution", "")
+        deviates = bool(entry.get("locallyModified", False)) or (
+            bool(tpl_hash_old) and proj_hash_current != tpl_hash_old
+        )
 
         # Classify
-        if not template_changed and not project_changed:
-            status = "UP_TO_DATE"
-        elif not template_changed and project_changed:
-            status = "PROJECT_CUSTOM"
-        elif template_changed and not project_changed:
-            status = "AUTO_UPDATE"
+        if deviates:
+            status = "CONFLICT" if template_changed else "PROJECT_CUSTOM"
         else:
-            status = "CONFLICT"
+            status = "AUTO_UPDATE" if template_changed else "UP_TO_DATE"
 
         # PROJECT-CUSTOM region reclassification: when BOTH sides carry the
         # markers and the content OUTSIDE the region is identical, the only
@@ -769,10 +798,15 @@ async def template_compute_status(
                 region_reclassified = True
 
         summary[status.lower()] += 1
+        if deviates:
+            summary["deviating"] += 1
         files_status[rel_path] = {
             "status": status,
             "template_changed": template_changed,
-            "locally_modified": project_changed,
+            "locally_modified": deviates,
+            "deviates_from_template": deviates,
+            "changed_since_sync": changed_since_sync,
+            "resolution_at_sync": resolution_at_sync,
             "template_hash_new": tpl_hash_new,
             "template_hash_old": tpl_hash_old,
             "local_hash_current": proj_hash_current,
@@ -953,10 +987,15 @@ async def template_apply_file(
             - "template": copy from template with placeholder replacement
             - "provided": use the content parameter as-is
             - "skip": don't change the project file, just update manifest hashes
+              ("keep mine" -- the entry records resolution="keep-mine" so a
+              later template_compute_status reports CONFLICT rather than
+              AUTO_UPDATE when the template moves again)
         content: File content to write (only used when source="provided")
 
     Returns:
-        JSON with the new manifest entry for this file (hashes, modification status)
+        JSON with the new manifest entry for this file (hashes, modification
+        status, and resolution="keep-mine" for source="skip"; "template" and
+        "provided" omit the key, which clears any previous resolution)
     """
     pp = pathlib.Path(project_path).resolve()
     manifest, errors = _load_manifest(pp)
@@ -1019,6 +1058,12 @@ async def template_apply_file(
         "localHash": local_hash,
         "locallyModified": locally_modified,
     }
+    if source == "skip":
+        # "Keep mine": the project deliberately deviates from this template
+        # revision. Recorded so a later status call can say WHY the file
+        # deviates. "template"/"provided" leave the key out, which clears it
+        # (template_finalize_sync replaces the entry wholesale).
+        manifest_entry["resolution"] = "keep-mine"
 
     return json.dumps({
         "file_path": file_path,
