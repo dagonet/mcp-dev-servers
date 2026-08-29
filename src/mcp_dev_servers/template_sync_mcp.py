@@ -787,6 +787,11 @@ async def template_compute_status(
         proj_part, proj_region = (
             _split_custom_region(proj_content) if proj_content is not None else ("", None)
         )
+        if tpl_region is None or proj_region is None:
+            # Single-sided or malformed markers: apply does NOT splice, so the
+            # region is not project-owned -- fall back to full-file content.
+            tpl_part = tpl_replaced
+            proj_part = proj_content if proj_content is not None else ""
         tpl_part_hash_new = _sha256(tpl_part)
         proj_part_hash = _sha256(proj_part) if proj_content is not None else ""
 
@@ -1109,8 +1114,14 @@ async def template_apply_file(
         else content if source == "provided"
         else (proj_content or "")
     )
-    local_part_hash = _sha256(_split_custom_region(final_content)[0])
-    tpl_part_hash = _sha256(_split_custom_region(tpl_replaced)[0]) if tpl_replaced else ""
+    final_part, final_region = _split_custom_region(final_content)
+    tpl_part, tpl_region_now = _split_custom_region(tpl_replaced)
+    if final_region is None or tpl_region_now is None:
+        # Single-sided markers: apply does not splice, so nothing is
+        # project-owned -- record full-file hashes (legacy behavior).
+        final_part, tpl_part = final_content, tpl_replaced
+    local_part_hash = _sha256(final_part)
+    tpl_part_hash = _sha256(tpl_part) if tpl_replaced else ""
 
     manifest_entry = {
         "templateHash": tpl_hash,

@@ -290,6 +290,40 @@ def test_region_apply_round_trip_survives_next_template_move(tmp_path):
     assert _status(proj)["summary"]["deviating"] == 0
 
 
+def test_project_only_markers_are_not_auto_updated(tmp_path):
+    """Single-sided markers must fall back to full-file behavior.
+
+    apply(source="template") only splices when BOTH sides carry markers, so a
+    part-hash comparison that ignores that would call the file safe and let
+    the apply wipe the project's region.
+    """
+    proj_body = TPL_V1 + REGION_PROJ  # template has no markers at all
+    repo, proj = _mk_project(tmp_path, TPL_V1, proj_body)
+    applied = json.loads(asyncio.run(
+        ts.template_apply_file(str(proj), "CLAUDE.md", source="skip")
+    ))
+    asyncio.run(ts.template_finalize_sync(str(proj), json.dumps([applied])))
+
+    (repo / "templates" / "general" / "CLAUDE.md").write_text(
+        TPL_V2, encoding="utf-8", newline=""
+    )
+    f = _status(proj)["files"]["CLAUDE.md"]
+    assert f["status"] == "CONFLICT"
+    assert f["region_only"] is False
+
+
+def test_apply_records_full_content_part_when_template_has_no_region(tmp_path):
+    proj_body = TPL_V1 + REGION_PROJ
+    _, proj = _mk_project(tmp_path, TPL_V2, proj_body)
+    entry = json.loads(asyncio.run(
+        ts.template_apply_file(str(proj), "CLAUDE.md", source="skip")
+    ))["manifest_entry"]
+    # Not the region-stripped part -- the template carries no markers, so the
+    # region is NOT project-owned as far as apply is concerned.
+    assert entry["templatePartHash"] == ts._sha256(proj_body)
+    assert entry["regionOnlyDeviation"] is False
+
+
 # --- (e) old manifest without `resolution` classifies by hash inequality ----
 
 def test_legacy_entry_without_resolution_still_conflicts(tmp_path):
