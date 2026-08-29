@@ -268,12 +268,7 @@ def test_legacy_region_entry_without_template_part_hash_conflicts_with_hint(tmp_
     proj_body = TPL_V1 + "Project edit outside the region.\n" + REGION_PROJ + "\n"
     _, proj = _mk_project(
         tmp_path, new_tpl, proj_body,
-        entry_overrides={
-            "templateHash": ts._sha256(old_tpl),
-            "templateRawHash": ts._sha256(old_tpl),
-            "localHash": ts._sha256(proj_body),
-            "locallyModified": True,
-        },
+        entry_overrides=_legacy_keep_mine_entry(old_tpl, proj_body),
     )
     f = _status(proj)["files"]["CLAUDE.md"]
     assert f["status"] == "CONFLICT"
