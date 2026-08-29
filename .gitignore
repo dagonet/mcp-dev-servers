@@ -9,3 +9,5 @@ dist/
 build/
 .claude/
 .worktrees/
+# Written by the context-mode plugin into any repo it runs in — tool output, not project content.
+/CLAUDE.md
