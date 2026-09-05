@@ -18,6 +18,7 @@ import re
 import subprocess
 import shutil
 import tempfile
+import time
 from difflib import SequenceMatcher, unified_diff
 from mcp.server.fastmcp import FastMCP
 
@@ -71,16 +72,43 @@ def _part_hashes(proj_content: str, tpl_content: str) -> tuple[str, str]:
     return _sha256(proj_part), (_sha256(tpl_part) if tpl_content else "")
 
 
-def _write_file_atomic(path: pathlib.Path, content: str) -> None:
+def _write_file_atomic(
+    path: pathlib.Path,
+    content: str,
+    *,
+    retries: int = 5,
+    backoff: float = 0.2,
+) -> None:
     """Write file atomically via temp + rename.
 
     newline="" disables universal-newline translation so template LF content
     lands as LF on Windows too (text-mode default would produce CRLF churn
     in every synced consumer — downstream finding 2026-07-19 #5).
+
+    On Windows, os.replace raises PermissionError (WinError 5) while another
+    process holds the target open -- e.g. a live hook run executing the very
+    script being synced (downstream finding 2026-09-05, MM-Agent v3.0.3).
+    The rename is retried `retries` times with linear backoff; if it still
+    fails the temp file is removed so no `.tmp` litters the project, and the
+    last error propagates.
     """
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(content, encoding="utf-8", newline="")
-    os.replace(str(tmp), str(path))
+    try:
+        for attempt in range(1, retries + 1):
+            try:
+                os.replace(str(tmp), str(path))
+                return
+            except PermissionError:
+                if attempt == retries:
+                    raise
+                time.sleep(backoff * attempt)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 # --- PROJECT-CUSTOM region (downstream finding 2026-07-19 #2) ---------------
