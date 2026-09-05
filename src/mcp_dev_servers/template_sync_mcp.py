@@ -1143,6 +1143,7 @@ async def template_apply_file(
     file_path: str,
     source: str = "template",
     content: str = "",
+    backup_dir: str = "",
 ) -> str:
     """
     Apply a template file to the project and return the updated manifest entry.
@@ -1159,6 +1160,10 @@ async def template_apply_file(
               reporting; the CONFLICT the next status call reports comes from
               the recorded part hashes, not from that field)
         content: File content to write (only used when source="provided")
+        backup_dir: Manifest v3 only. Directory that receives `<file>.pre-sync`
+            and `<file>.diff` before a LOCAL_EDITED template-class file is
+            overwritten. Required in that state -- the call is refused without
+            it. Ignored for v2 manifests.
 
     Returns:
         JSON with the new manifest entry for this file (hashes, modification
@@ -1176,6 +1181,16 @@ async def template_apply_file(
         return json.dumps({"error": errors[0]}, ensure_ascii=False)
 
     placeholders = manifest.get("placeholders", {})
+
+    from . import template_sync_v3 as v3
+    if v3.is_v3(manifest):
+        rules = v3.load_ownership(manifest["templateRepo"])
+        if rules is None:
+            return json.dumps({"error": f"manifest v3 needs {v3.OWNERSHIP_FILE} in the template repo"}, ensure_ascii=False)
+        return json.dumps(
+            v3.apply_file_v3(pp, manifest, rules, file_path, source, content, backup_dir),
+            ensure_ascii=False,
+        )
 
     # Read current template content
     tpl_raw = _read_file(_template_file_path(manifest, file_path))

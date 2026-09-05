@@ -601,3 +601,99 @@ def compute_status_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules) -
         "summary": summary,
         "warnings": warnings,
     }
+
+
+# -------------------------
+# v3 apply
+# -------------------------
+
+def write_backup(backup_dir: pathlib.Path, proj_rel: str, pre_image: str, diff: str) -> dict:
+    target = backup_dir / core._normalize_path(proj_rel)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    pre = target.with_name(target.name + ".pre-sync")
+    dif = target.with_name(target.name + ".diff")
+    core._write_file_atomic(pre, pre_image)
+    core._write_file_atomic(dif, diff)
+    return {"pre_sync": str(pre), "diff": str(dif)}
+
+
+def apply_file_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules, file_path: str,
+                  source: str, content: str, backup_dir: str) -> dict:
+    proj_rel = core._normalize_path(file_path)
+    tpl_rel = rules.template_path_for(proj_rel)
+    entry = manifest.get("files", {}).get(proj_rel) or manifest.get("files", {}).get(file_path) or {}
+    ownership = entry.get("ownership") or rules.class_of(tpl_rel)
+    if ownership is None:
+        return {"error": f"{proj_rel}: no ownership rule matches {tpl_rel!r} in {OWNERSHIP_FILE} -- not applied"}
+    if ownership == "project":
+        return {"error": f"{proj_rel}: ownership is 'project'; the server never writes it"}
+    if source not in ("template", "provided"):
+        if source == "skip":
+            return {"error": f"source='skip' is refused under manifest v3 for {ownership}-class files: "
+                             "there is no keep-mine class -- fix the template or declare a key"}
+        return {"error": f"Unknown source: {source}"}
+    if source == "provided" and not content:
+        return {"error": "source='provided' requires content parameter"}
+    for hit in collect_gate_refs(pp, rules)[0]:
+        if hit["path"] == proj_rel:
+            return {"error": f"gate_self_reference: **{hit['key']}**: points at template-class {proj_rel}; "
+                             "move the logic to a non-template path (e.g. scripts/gate.sh) and point the key there"}
+
+    placeholders = manifest.get("placeholders", {})
+    tpl_raw = core._read_file(core._template_file_path(manifest, tpl_rel))
+    tpl_replaced = core._apply_placeholders(tpl_raw, placeholders) if tpl_raw is not None else None
+    if source == "template" and tpl_replaced is None:
+        return {"error": f"Template file not found: {tpl_rel}"}
+    target = pp / proj_rel
+    proj_existing = core._read_file(target)
+    write_content = tpl_replaced if source == "template" else content
+
+    if ownership == "once":
+        if proj_existing is not None:
+            return {
+                "file_path": proj_rel, "action": "kept", "ownership": "once",
+                "manifest_entry": {"ownership": "once"}, "bytes_written": 0,
+                "backup": None, "local_edit_overwritten": False,
+            }
+        target.parent.mkdir(parents=True, exist_ok=True)
+        core._write_file_atomic(target, write_content)
+        return {
+            "file_path": proj_rel, "action": f"created_from_{source}", "ownership": "once",
+            "manifest_entry": {"ownership": "once"},
+            "bytes_written": len(write_content.encode("utf-8")),
+            "backup": None, "local_edit_overwritten": False,
+        }
+
+    # template class
+    backup = None
+    local_edit = False
+    if proj_existing is not None:
+        baseline = parse_hash(entry.get("hash", ""))
+        if baseline:
+            status, local_diff = template_status(baseline, tpl_replaced, proj_existing)
+            local_edit = status == "LOCAL_EDITED"
+        else:
+            # No baseline (new file the project already has): any difference
+            # from what will be written is a local edit.
+            local_edit = proj_existing != write_content
+            local_diff = _unified(write_content, proj_existing, "template", "project") if local_edit else None
+        if local_edit and proj_existing != write_content:
+            if not backup_dir:
+                return {"error": f"{proj_rel} is LOCAL_EDITED; refusing to overwrite without backup_dir "
+                                 "(the pre-image and diff must be saved first)"}
+            backup = write_backup(pathlib.Path(backup_dir).resolve(), proj_rel, proj_existing, local_diff or "")
+        elif local_edit:
+            local_edit = False   # content already equals the target; nothing is lost
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    core._write_file_atomic(target, write_content)
+    hash_hex = core._sha256(tpl_replaced) if tpl_replaced is not None else core._sha256(write_content)
+    return {
+        "file_path": proj_rel,
+        "action": ("created" if proj_existing is None else "written") + f"_from_{source}",
+        "ownership": "template",
+        "manifest_entry": {"hash": format_hash(hash_hex), "ownership": "template"},
+        "bytes_written": len(write_content.encode("utf-8")),
+        "backup": backup,
+        "local_edit_overwritten": local_edit,
+    }
