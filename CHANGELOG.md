@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-09-05
+
+### Compatibility
+
+- claude-code-toolkit v3.1 pins this version as the minimum server for the template-sync skill's live-run rule (do not write hook files while a live run is in flight — the skill half shipped in toolkit v3.0.4). Consumers must restart the MCP server to pick up the fix; it lives in the process, not in a synced file.
+
 ### Fixed
 
 - `template-sync-tools`: `template_apply_file` no longer fails with `WinError 5` (access denied) and leaves a `.tmp` beside the target when another process holds the file open at rename time — e.g. a live hook run executing the very script being synced (Motorsport-Manager-AI-Agent v3.0.3 sync, 2026-09-05). `_write_file_atomic` retries the final `os.replace` up to 5 times with linear backoff on `PermissionError`, and removes its own temp file before re-raising when the rename still fails. Other errors are not retried.
