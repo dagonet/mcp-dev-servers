@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `template-sync-tools`: `template_apply_file` no longer fails with `WinError 5` (access denied) and leaves a `.tmp` beside the target when another process holds the file open at rename time — e.g. a live hook run executing the very script being synced (Motorsport-Manager-AI-Agent v3.0.3 sync, 2026-09-05). `_write_file_atomic` retries the final `os.replace` up to 5 times with linear backoff on `PermissionError`, and removes its own temp file before re-raising when the rename still fails. Other errors are not retried.
+
 ## [0.2.0] — 2026-08-29
 
 ### Compatibility

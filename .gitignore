@@ -11,3 +11,6 @@ build/
 .worktrees/
 # Written by the context-mode plugin into any repo it runs in — tool output, not project content.
 /CLAUDE.md
+
+# pytest basetemp when TMPDIR resolves to the repo
+pytest-of-*/
