@@ -232,3 +232,128 @@ def test_read_with_flags_and_drift(tmp_path):
     assert v3.encoding_drift(flags, {"bom": False, "crlf": False}) == ["bom", "crlf"]
     assert v3.encoding_drift(flags, flags) == []
     assert v3.read_with_flags(tmp_path / "missing") == (None, {"bom": False, "crlf": False})
+
+
+# --- Task 6: template_compute_status v3 --------------------------------------
+
+
+def _status(proj):
+    return _run(ts.template_compute_status(str(proj)))
+
+
+def test_template_status_matrix():
+    h = ts._sha256("v1\n")
+    assert v3.template_status(h, "v1\n", "v1\n") == ("IDENTICAL", None)
+    assert v3.template_status(h, "v2\n", "v1\n") == ("TEMPLATE_UPDATED", None)
+    status, diff = v3.template_status(h, "v1\n", "v1 edited\n")
+    assert status == "LOCAL_EDITED" and "+v1 edited" in diff
+    status, diff = v3.template_status(h, "v2\n", "v1 edited\n")
+    assert status == "LOCAL_EDITED" and "-v2" in diff and "+v1 edited" in diff
+    assert v3.template_status(h, None, "v1\n") == ("TEMPLATE_DELETED", None)
+    assert v3.template_status(h, "v1\n", None) == ("TEMPLATE_UPDATED", None)
+
+
+def test_compute_status_v3_classifies_every_class(tmp_path):
+    repo, proj = _mk_v3(
+        tmp_path,
+        template={
+            "CLAUDE.md": "# {{NAME}}\n", "hooks/gate.sh": "g2", ".claude/agents/coder.md": "c",
+            ".claude/rules/project.md": "# Project instructions\n",
+            "PROJECT_CONTEXT.md": "**Protected branches**: main\n**Gate**: g\n**Test**: t\n",
+            ".claude/agents/new.md": "n", "gitignore": "*.log\n",
+            "notes/x.md": "x", ".claude/settings.json": "{}",
+        },
+        project={
+            "CLAUDE.md": "# Demo\n", "hooks/gate.sh": "g1", ".claude/agents/coder.md": "c edited",
+            "PROJECT_CONTEXT.md": "**Protected branches**: main\n", ".claude/agents/game-tester.md": "t",
+            ".claude/settings.json": "{}",
+        },
+        entries={
+            "CLAUDE.md": _tpl_entry("# {{NAME}}\n", {"NAME": "Demo"}),
+            "hooks/gate.sh": _tpl_entry("g1"),
+            ".claude/agents/coder.md": _tpl_entry("c"),
+            ".claude/settings.json": _tpl_entry("{}"),
+            ".claude/rules/project.md": {"ownership": "once"},
+            "PROJECT_CONTEXT.md": {"ownership": "once"},
+        },
+        placeholders={"NAME": "Demo"},
+        ownership={"tracked_paths": ["templates", "hooks"], "rules": OWNERSHIP["rules"] + [
+            {"pattern": "notes/*", "ownership": "project"},
+        ]},
+    )
+    res = _status(proj)
+    f = res["files"]
+    assert f["CLAUDE.md"]["status"] == "IDENTICAL"
+    assert f["hooks/gate.sh"]["status"] == "TEMPLATE_UPDATED"
+    assert f[".claude/agents/coder.md"]["status"] == "LOCAL_EDITED"
+    assert "+c edited" in f[".claude/agents/coder.md"]["local_diff"]
+    assert f[".claude/settings.json"]["status"] == "IDENTICAL"
+    assert f[".claude/rules/project.md"]["status"] == "MISSING"
+    assert f["PROJECT_CONTEXT.md"]["status"] == "PRESENT"
+    assert f["PROJECT_CONTEXT.md"]["key_audit"]["missing_required"] == ["Gate"]
+    assert f["PROJECT_CONTEXT.md"]["key_audit"]["optional_absent"] == ["Test"]
+    assert "audit_base_unavailable" in f["PROJECT_CONTEXT.md"]["key_audit"]["warnings"]
+    assert res["new_template_files"] == [".claude/agents/new.md", ".gitignore"]
+    assert res["unclassified_template_files"] == []
+    assert res["orphans"] == [".claude/agents/game-tester.md"]
+    assert res["summary"] == {
+        "identical": 2, "template_updated": 1, "local_edited": 1, "template_deleted": 0,
+        "present": 1, "missing": 1,
+    }
+    assert "CONFLICT" not in json.dumps(res)
+
+
+def test_compute_status_v3_unclassified_and_deleted(tmp_path):
+    repo, proj = _mk_v3(
+        tmp_path,
+        template={"CLAUDE.md": "x", "weird.toml": "w"},
+        project={"CLAUDE.md": "x", "hooks/gone.sh": "old"},
+        entries={"CLAUDE.md": _tpl_entry("x"), "hooks/gone.sh": _tpl_entry("old")},
+    )
+    res = _status(proj)
+    assert res["unclassified_template_files"] == ["weird.toml"]
+    assert res["files"]["hooks/gone.sh"]["status"] == "TEMPLATE_DELETED"
+    assert res["deleted_template_files"] == ["hooks/gone.sh"]
+    assert res["summary"]["template_deleted"] == 1
+    assert res["gate_self_reference"] == [] and res["gate_unverified"] is False
+
+
+def test_compute_status_v3_encoding_drift_and_gate(tmp_path):
+    repo, proj = _mk_v3(
+        tmp_path,
+        template={"hooks/run-gate.sh": "g\n", ".prettierrc": "{}\n",
+                  "PROJECT_CONTEXT.md": "**Protected branches**: main\n**Gate**: none\n**Test**: t\n"},
+        project={"hooks/run-gate.sh": "g\r\n",
+                 "PROJECT_CONTEXT.md": "**Protected branches**: main\n- **Gate**: `bash hooks/run-gate.sh`\n**Test**: t\n"},
+        entries={"hooks/run-gate.sh": _tpl_entry("g\n"), ".prettierrc": {"ownership": "once"},
+                 "PROJECT_CONTEXT.md": {"ownership": "once"}},
+        ownership={"tracked_paths": ["templates", "hooks"],
+                   "rules": OWNERSHIP["rules"] + [{"pattern": ".prettierrc", "ownership": "once"}]},
+    )
+    (proj / ".prettierrc").write_bytes(b"\xef\xbb\xbf{}\r\n")
+    res = _status(proj)
+    f = res["files"]
+    assert f["hooks/run-gate.sh"]["status"] == "IDENTICAL"          # CRLF-only is never LOCAL_EDITED
+    assert f["hooks/run-gate.sh"]["encoding_drift"] == ["crlf"]
+    assert f[".prettierrc"]["status"] == "PRESENT"
+    assert f[".prettierrc"]["encoding_drift"] == ["bom", "crlf"]
+    assert f["PROJECT_CONTEXT.md"]["encoding_drift"] == []
+    assert res["gate_self_reference"] == [{"key": "Gate", "path": "hooks/run-gate.sh"}]
+    assert res["gate_unverified"] is True
+
+
+def test_compute_status_v3_root_consumer_file_stays_project(tmp_path):
+    # panoscribe's escape hatch (review §10c): a root-level consumer file that
+    # matches a template-class rule but has no manifest entry is never in
+    # `files`, never diffed, never applied -- listed only under orphans.
+    repo, proj = _mk_v3(
+        tmp_path, template={"CLAUDE.md": "x"},
+        project={"CLAUDE.md": "x", "preflight.sh": "gate logic on purpose\n"},
+        entries={"CLAUDE.md": _tpl_entry("x")},
+        ownership={"tracked_paths": ["templates", "hooks"],
+                   "rules": OWNERSHIP["rules"] + [{"pattern": "*.sh", "ownership": "template"}]},
+    )
+    res = _status(proj)
+    assert "preflight.sh" not in res["files"]
+    assert res["orphans"] == ["preflight.sh"]
+    assert res["new_template_files"] == []

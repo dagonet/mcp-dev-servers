@@ -453,3 +453,151 @@ def read_with_flags(path: pathlib.Path) -> tuple[str | None, dict]:
 
 def encoding_drift(proj_flags: dict, tpl_flags: dict) -> list[str]:
     return sorted(k for k in ("bom", "crlf") if bool(proj_flags.get(k)) != bool(tpl_flags.get(k)))
+
+
+# -------------------------
+# v3 status
+# -------------------------
+
+def _unified(a: str, b: str, fromfile: str, tofile: str) -> str:
+    from difflib import unified_diff
+    return "".join(unified_diff(
+        a.splitlines(keepends=True), b.splitlines(keepends=True),
+        fromfile=fromfile, tofile=tofile,
+    ))
+
+
+def template_status(entry_hash_hex: str, tpl_replaced: str | None,
+                    proj_content: str | None) -> tuple[str, str | None]:
+    """§7 statuses for a `template` entry. LOCAL_EDITED wins over
+    TEMPLATE_UPDATED; local_diff is what the overwrite would discard
+    (project -> current template)."""
+    if tpl_replaced is None:
+        return "TEMPLATE_DELETED", None
+    if proj_content is None:
+        return "TEMPLATE_UPDATED", None
+    if core._sha256(proj_content) != entry_hash_hex:
+        return "LOCAL_EDITED", _unified(tpl_replaced, proj_content, "template", "project")
+    if core._sha256(tpl_replaced) != entry_hash_hex:
+        return "TEMPLATE_UPDATED", None
+    return "IDENTICAL", None
+
+
+def _git_commit_exists(repo: str, ref: str) -> bool:
+    return core._run_git(["cat-file", "-e", f"{ref}^{{commit}}"], cwd=repo)["exit_code"] == 0
+
+
+def resolve_base(manifest: dict, rel_path: str) -> tuple[str | None, str, str | None]:
+    """Placeholder-replaced template content of `rel_path` at the held revision.
+
+    Chain (review §6.4): template_commit (alias lastSynced) -> the
+    template_version tag's commit -> unavailable. Never the current template.
+    Returns (content, base_label, warning).
+    """
+    repo = core._template_repo_resolved(manifest)
+    git_path = core._template_git_path(manifest, rel_path)
+    placeholders = manifest.get("placeholders", {})
+    candidates = []
+    commit = manifest_commit(manifest)
+    if commit and commit != "unknown":
+        candidates.append(commit)
+    tag = manifest.get("template_version")
+    if tag:
+        candidates.append(str(tag))
+    for ref in candidates:
+        if not _git_commit_exists(repo, ref):
+            continue
+        raw = core._git_show_file(repo, ref, git_path)
+        if raw is not None:
+            return core._apply_placeholders(raw, placeholders), ref, None
+    return None, "unavailable", "migration_base_unavailable"
+
+
+def compute_status_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules) -> dict:
+    placeholders = manifest.get("placeholders", {})
+    repo_root = core._resolve_path(manifest["templateRepo"])
+    template_dir = core._get_template_dir(manifest)
+    warnings = list(rules.warnings)
+    files_status: dict[str, dict] = {}
+    summary = {
+        "identical": 0, "template_updated": 0, "local_edited": 0,
+        "template_deleted": 0, "present": 0, "missing": 0,
+    }
+
+    for proj_rel, entry in manifest.get("files", {}).items():
+        proj_rel = core._normalize_path(proj_rel)
+        tpl_rel = rules.template_path_for(proj_rel)
+        ownership = entry.get("ownership") or rules.class_of(tpl_rel) or "template"
+        tpl_raw, tpl_flags = read_with_flags(core._template_file_path(manifest, tpl_rel))
+        tpl_replaced = core._apply_placeholders(tpl_raw, placeholders) if tpl_raw is not None else None
+        proj_content, proj_flags = read_with_flags(pp / proj_rel)
+        info: dict = {"ownership": ownership, "template_path": tpl_rel,
+                      "project_file_missing": proj_content is None,
+                      "encoding_drift": (encoding_drift(proj_flags, tpl_flags)
+                                         if proj_content is not None and tpl_raw is not None else [])}
+
+        if ownership == "once":
+            if proj_content is not None:
+                status = "PRESENT"
+                rule = rules.rule_for(tpl_rel) or {}
+                if rule.get("audit") == "keys" and tpl_replaced is not None:
+                    base, base_label, warn = resolve_base(manifest, tpl_rel)
+                    audit = audit_keys(proj_content, tpl_replaced, base, rule, placeholders)
+                    audit["base"] = base_label
+                    if base is not None:
+                        audit["template_notes_changed"] = notes_hunks(base, tpl_replaced)
+                    info["key_audit"] = audit
+            elif tpl_replaced is None:
+                status = "TEMPLATE_DELETED"
+            else:
+                status = "MISSING"
+        else:
+            status, local_diff = template_status(parse_hash(entry.get("hash", "")), tpl_replaced, proj_content)
+            if local_diff is not None:
+                info["local_diff"] = local_diff
+            info["template_changed"] = (
+                tpl_replaced is not None and core._sha256(tpl_replaced) != parse_hash(entry.get("hash", ""))
+            )
+
+        info["status"] = status
+        summary[status.lower()] += 1
+        files_status[proj_rel] = info
+
+    # New template files: template/once paths absent from the manifest.
+    tracked = {core._normalize_path(k) for k in manifest.get("files", {})}
+    scanned = core._scan_template_files(template_dir, repo_root)
+    gitignore = template_dir / "gitignore"
+    if gitignore.is_file():
+        scanned.append("gitignore")   # _scan_template_files skips it; the rules decide now
+    new_files, unclassified = [], []
+    template_files: set[str] = set()
+    for tpl_rel in sorted(set(scanned)):
+        cls = rules.class_of(tpl_rel)
+        proj_rel = rules.project_path_for(tpl_rel)
+        template_files.add(proj_rel)
+        if proj_rel in tracked:
+            continue
+        if cls in ("template", "once"):
+            new_files.append(proj_rel)
+        elif cls is None:
+            unclassified.append(tpl_rel)
+
+    orphans = find_orphans(pp, rules, tracked, template_files)
+    deleted = [p for p, s in files_status.items() if s["status"] == "TEMPLATE_DELETED"]
+    gate_hits, gate_declared = collect_gate_refs(pp, rules)
+
+    return {
+        "manifest_version": 3,
+        "template_commit": core._git_head(core._template_repo_resolved(manifest)) or "unknown",
+        "template_version": manifest.get("template_version"),
+        "last_synced_commit": manifest_commit(manifest),
+        "files": files_status,
+        "new_template_files": sorted(new_files),
+        "unclassified_template_files": sorted(unclassified),
+        "orphans": orphans,
+        "deleted_template_files": deleted,
+        "gate_self_reference": gate_hits,
+        "gate_unverified": gate_declared,
+        "summary": summary,
+        "warnings": warnings,
+    }

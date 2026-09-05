@@ -825,6 +825,14 @@ async def template_compute_status(
         JSON with per-file status, new/deleted file lists, and summary counts,
         including `deviating` -- genuine deviations only (region-only
         differences are not counted).
+
+        For a v3 manifest the statuses are IDENTICAL / TEMPLATE_UPDATED /
+        LOCAL_EDITED / TEMPLATE_DELETED (template class) and PRESENT / MISSING
+        (once class); the result also carries `orphans`,
+        `unclassified_template_files`, `local_diff` per LOCAL_EDITED file,
+        `key_audit` per audited once file, `encoding_drift` per file (BOM/EOL
+        only differences, informational), and `gate_self_reference` /
+        `gate_unverified` at top level. CONFLICT never appears for v3.
     """
     pp = pathlib.Path(project_path).resolve()
     manifest, errors = _load_manifest(pp)
@@ -835,6 +843,13 @@ async def template_compute_status(
         manifest["templateRepo"] = template_repo
     if variant:
         manifest["variant"] = variant
+
+    from . import template_sync_v3 as v3
+    if v3.is_v3(manifest):
+        rules = v3.load_ownership(manifest["templateRepo"])
+        if rules is None:
+            return json.dumps({"error": f"manifest v3 needs {v3.OWNERSHIP_FILE} in the template repo"}, ensure_ascii=False)
+        return json.dumps(v3.compute_status_v3(pp, manifest, rules), ensure_ascii=False)
 
     placeholders = manifest.get("placeholders", {})
     template_dir = _get_template_dir(manifest)
