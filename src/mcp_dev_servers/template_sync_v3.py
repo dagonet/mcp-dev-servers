@@ -185,3 +185,181 @@ def requires_server_satisfied(spec: str, server_version: str) -> tuple[bool, str
 
 def unknown_top_level_keys(manifest: dict) -> list[str]:
     return sorted(k for k in manifest if k not in KNOWN_TOP_LEVEL_V3)
+
+
+# -------------------------
+# Key audit (once files with "audit": "keys")
+# -------------------------
+
+KEY_LINE_RE = re.compile(r"^(?:[-*+][ \t]+)?\*\*(?P<key>[^*\n]+?)\*\*:[ \t]*(?P<val>.*)$", re.M)
+PLACEHOLDER_RE = re.compile(r"\{\{.*?\}\}")
+
+
+def parse_keys(text: str) -> dict[str, str]:
+    keys: dict[str, str] = {}
+    for m in KEY_LINE_RE.finditer(text or ""):
+        key = m.group("key").strip()
+        if key not in keys:
+            keys[key] = m.group("val").strip()
+    return keys
+
+
+def find_key(consumer_keys: dict[str, str], key: str, rule: dict) -> list[str]:
+    """Names in the consumer that satisfy `key`: exact, qualified `key (...)`,
+    or a declared alias (review §7b). Exact first, then in document order.
+    Used for OPTIONAL keys; required keys use exact_holdings."""
+    matches = []
+    if key in consumer_keys:
+        matches.append(key)
+    qualified = re.compile(r"^" + re.escape(key) + r" \(.+\)$")
+    aliases = set((rule.get("aliases") or {}).get(key, []))
+    for name in consumer_keys:
+        if name == key:
+            continue
+        if qualified.match(name) or name in aliases:
+            matches.append(name)
+    return matches
+
+
+def _norm_ws(s: str) -> str:
+    return " ".join((s or "").split())
+
+
+def exact_holdings(consumer_keys: dict[str, str], key: str, rule: dict) -> list[str]:
+    """The hook's own match for a REQUIRED key: exact `**Key**:` or one of its
+    deprecated spellings (review §11b). Qualified/alias forms do not count."""
+    deprecated_map = dict(rule.get("deprecated_keys") or {})
+    out = [key] if key in consumer_keys else []
+    out += [old for old, new in deprecated_map.items() if new == key and old in consumer_keys]
+    return out
+
+
+def _hook_note(key: str, rule: dict) -> str:
+    deprecated_map = dict(rule.get("deprecated_keys") or {})
+    spellings = [f"**{key}**:"] + [f"**{old}**:" for old, new in deprecated_map.items() if new == key]
+    return f"the hook matches {'/'.join(spellings)} exactly and will not read it"
+
+
+def audit_keys(proj_text: str, tpl_text: str, tpl_at_sync_text: str | None, rule: dict,
+               placeholders: dict | None = None) -> dict:
+    proj = parse_keys(proj_text)
+    tpl = parse_keys(tpl_text)
+    tpl_sync = parse_keys(tpl_at_sync_text) if tpl_at_sync_text is not None else None
+    required = list(rule.get("required_keys") or [])
+    deprecated_map = dict(rule.get("deprecated_keys") or {})
+    warnings: list[str] = []
+    if tpl_sync is None:
+        warnings.append("audit_base_unavailable")
+
+    missing_required: list[str] = []
+    qualified_only: list[dict] = []
+    optional_absent: list[str] = []
+    detail: dict[str, dict] = {}
+
+    def _required(key: str) -> None:
+        held = exact_holdings(proj, key, rule)
+        if not held:
+            loose = find_key(proj, key, rule)
+            if loose:
+                qualified_only.append({"key": key, "held_as": loose, "note": _hook_note(key, rule)})
+            else:
+                missing_required.append(key)
+            return
+        info = {
+            "value": proj[held[0]],
+            "matched_as": held,
+            "template_value": tpl.get(key),
+        }
+        if tpl_sync is not None:
+            at_sync = tpl_sync.get(key)
+            info["template_value_at_sync"] = at_sync
+            info["template_default_changed"] = _norm_ws(tpl.get(key) or "") != _norm_ws(at_sync or "")
+            info["consumer_holds_old_default"] = (
+                at_sync is not None and _norm_ws(proj[held[0]]) == _norm_ws(at_sync)
+            )
+        detail[key] = info
+
+    for key in tpl:
+        if key in required:
+            _required(key)
+        elif not find_key(proj, key, rule):
+            optional_absent.append(key)
+
+    # Required keys the template itself lacks are still required.
+    for key in required:
+        if key not in tpl:
+            _required(key)
+
+    placeholder_keys = sorted(k for k, val in proj.items() if PLACEHOLDER_RE.search(val))
+    deprecated = [
+        {"key": k, "replacement": deprecated_map[k]}
+        for k in proj if k in deprecated_map
+    ]
+    # Placeholder VALUE correctness (review §10b): the key's value in the
+    # once file versus the manifest placeholder that renders into CLAUDE.md.
+    divergence = []
+    ph = placeholders or {}
+    for key, ph_name in (rule.get("placeholder_map") or {}).items():
+        for name in find_key(proj, key, rule):
+            ph_value = ph.get(ph_name)
+            if ph_value is None or _norm_ws(proj[name]) != _norm_ws(ph_value):
+                divergence.append({"key": name, "key_value": proj[name],
+                                   "placeholder": ph_name, "placeholder_value": ph_value})
+    return {
+        "missing_required": missing_required,
+        "qualified_only": qualified_only,
+        "optional_absent": optional_absent,
+        "placeholder_keys": placeholder_keys,
+        "deprecated_keys": deprecated,
+        "required": detail,
+        "placeholder_key_divergence": divergence,
+        "warnings": warnings,
+    }
+
+
+def gate_tokens(value: str) -> list[str]:
+    """Tokenise a **Gate**:/**Test**: value the way run-gate.sh normalises it
+    (review §11a): surrounding backticks off the whole value and each token,
+    leading ./ dropped, a leading bash/sh token ignored."""
+    value = (value or "").strip().strip("`").strip()
+    toks = [core._normalize_path(t.strip("\"'`")) for t in value.split()]
+    if toks and toks[0] in ("bash", "sh"):
+        toks = toks[1:]
+    out = []
+    for t in toks:
+        while t.startswith("./"):
+            t = t[2:]
+        if t:
+            out.append(t)
+    return out
+
+
+def gate_refs(consumer_keys: dict[str, str], rule: dict, rules: OwnershipRules) -> list[dict]:
+    """Direct gate self-reference (review §9a, §11a): a token in a required
+    key's value that is a template-class path by the rules. Static and
+    direct-only -- a wrapper that calls the hook from elsewhere passes."""
+    out = []
+    for key in rule.get("required_keys") or []:
+        for name in exact_holdings(consumer_keys, key, rule):
+            for tok in gate_tokens(consumer_keys[name]):
+                if rules.class_of(rules.template_path_for(tok)) == "template":
+                    out.append({"key": name, "path": tok})
+    return out
+
+
+def collect_gate_refs(pp: pathlib.Path, rules: OwnershipRules) -> tuple[list[dict], bool]:
+    """(gate_self_reference hits, gate declared) over every audited once file
+    whose pattern is a literal path."""
+    hits: list[dict] = []
+    declared = False
+    for rule in rules.rules:
+        if rule.get("audit") != "keys" or any(c in rule["pattern"] for c in "*?["):
+            continue
+        text = core._read_file(pp / rules.project_path_for(rule["pattern"]))
+        if text is None:
+            continue
+        keys = parse_keys(text)
+        if exact_holdings(keys, "Gate", rule):
+            declared = True
+        hits.extend(gate_refs(keys, rule, rules))
+    return hits, declared
