@@ -1306,6 +1306,11 @@ async def template_finalize_sync(
 
     Returns:
         JSON confirmation with counts and the dropped entries
+
+    Manifest v3: entries carry `hash` (sha256:-prefixed) and `ownership`;
+    `template_commit` is HEAD of the template repo and `template_version` the
+    nearest reachable tag whose tracked tree is identical (null when none).
+    Unknown top-level keys are preserved and listed in `unknown_keys`.
     """
     pp = pathlib.Path(project_path).resolve()
     manifest, errors = _load_manifest(pp)
@@ -1326,6 +1331,13 @@ async def template_finalize_sync(
         deleted = json.loads(deleted_files)
     except json.JSONDecodeError:
         deleted = []
+
+    from . import template_sync_v3 as v3
+    if v3.is_v3(manifest):
+        rules = v3.load_ownership(manifest["templateRepo"])
+        if rules is None:
+            return json.dumps({"error": f"manifest v3 needs {v3.OWNERSHIP_FILE} in the template repo"}, ensure_ascii=False)
+        return json.dumps(v3.finalize_v3(pp, manifest, rules, applied, new, deleted), ensure_ascii=False)
 
     # Validate before touching the manifest (downstream finding 2026-07-19 #6:
     # hand-typed hashes with stray characters silently corrupted a manifest).

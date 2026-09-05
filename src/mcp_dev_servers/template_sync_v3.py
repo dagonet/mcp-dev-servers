@@ -697,3 +697,126 @@ def apply_file_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules, file_
         "backup": backup,
         "local_edit_overwritten": local_edit,
     }
+
+
+# -------------------------
+# v3 finalize
+# -------------------------
+
+def _tree_id(repo: str, ref: str, path: str) -> str | None:
+    r = core._run_git(["rev-parse", f"{ref}:{path}"], cwd=repo)
+    return r["stdout"].strip() if r["exit_code"] == 0 else None
+
+
+def derive_template_version(repo: str, commit: str, tracked_paths: list[str]) -> tuple[str | None, str | None]:
+    """Nearest reachable tag whose tree over the tracked paths equals the
+    tree at `commit` (review §6.3). Never `git describe`."""
+    if core._run_git(["rev-parse", "--is-inside-work-tree"], cwd=repo)["exit_code"] != 0:
+        return None, "template_repo_not_git"
+    r = core._run_git(["tag", "--merged", commit, "--sort=-v:refname"], cwd=repo)
+    if r["exit_code"] != 0:
+        return None, "untagged_template_tree"
+    want = {p: _tree_id(repo, commit, p) for p in tracked_paths}
+    for tag in [t.strip() for t in r["stdout"].splitlines() if t.strip()]:
+        if all(_tree_id(repo, f"{tag}^{{commit}}", p) == want[p] for p in tracked_paths):
+            return tag, None
+    return None, "untagged_template_tree"
+
+
+def finalize_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules,
+                applied: list, new: list, deleted: list) -> dict:
+    invalid: list[str] = []
+    for item in applied:
+        fp = item.get("file_path", "")
+        entry = item.get("manifest_entry", {})
+        norm = core._normalize_path(fp)
+        if not fp or not norm.strip("/") or ".." in norm.split("/"):
+            invalid.append(f"invalid file_path: {fp!r}")
+            continue
+        if entry.get("ownership") not in ("template", "once"):
+            invalid.append(f"{fp}: ownership must be 'template' or 'once'")
+        if entry.get("ownership") == "template" and not HASH_RE.match(entry.get("hash", "") or ""):
+            invalid.append(f"{fp}: hash is not sha256:<64 lowercase hex>")
+    if invalid:
+        return {"error": "applied_files validation failed — manifest NOT written", "invalid_entries": invalid}
+
+    files = {core._normalize_path(k): v for k, v in manifest.get("files", {}).items()}
+    placeholders = manifest.get("placeholders", {})
+    warnings = list(rules.warnings)
+
+    updated = 0
+    for item in applied:
+        fp = core._normalize_path(item["file_path"])
+        entry = item["manifest_entry"]
+        if entry["ownership"] == "template":
+            files[fp] = {"hash": format_hash(parse_hash(entry["hash"])), "ownership": "template"}
+        else:
+            files[fp] = {"ownership": "once"}
+        updated += 1
+
+    added = 0
+    for fp in new:
+        fp = core._normalize_path(fp)
+        if fp in files:
+            continue
+        tpl_rel = rules.template_path_for(fp)
+        cls = rules.class_of(tpl_rel)
+        if cls == "once":
+            files[fp] = {"ownership": "once"}
+        elif cls == "template":
+            tpl_raw = core._read_file(core._template_file_path(manifest, tpl_rel))
+            if tpl_raw is None:
+                warnings.append(f"new file {fp}: template file {tpl_rel} not found -- skipped")
+                continue
+            files[fp] = {"hash": format_hash(core._sha256(core._apply_placeholders(tpl_raw, placeholders))),
+                         "ownership": "template"}
+        else:
+            warnings.append(f"new file {fp}: no template/once rule -- skipped")
+            continue
+        added += 1
+
+    explicit = {core._normalize_path(p) for p in deleted if isinstance(p, str) and p}
+    dropped = []
+    for fp in list(files):
+        if fp in explicit:
+            del files[fp]
+            dropped.append(fp)
+            continue
+        if core._template_file_path(manifest, rules.template_path_for(fp)).is_file():
+            continue
+        if (pp / fp).exists():
+            continue
+        del files[fp]
+        dropped.append(fp)
+
+    repo = core._template_repo_resolved(manifest)
+    head = core._run_git(["rev-parse", "HEAD"], cwd=repo)
+    commit = head["stdout"].strip() if head["exit_code"] == 0 else manifest_commit(manifest)
+    version, warn = derive_template_version(repo, commit, rules.tracked_paths)
+    if warn:
+        warnings.append(warn)
+
+    out = {k: v for k, v in manifest.items() if k not in ("version", "lastSynced")}
+    out["manifest_version"] = MANIFEST_VERSION_V3
+    out["template_version"] = version
+    out["template_commit"] = commit
+    out["requires_server"] = manifest.get("requires_server") or f">={MIN_SERVER_FOR_V3}"
+    out["files"] = dict(sorted(files.items()))
+    unknown = unknown_top_level_keys(out)
+
+    manifest_path = pp / ".claude" / "template-manifest.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    core._write_file_atomic(manifest_path, json.dumps(out, indent=2, ensure_ascii=False))
+    return {
+        "manifest_path": ".claude/template-manifest.json",
+        "manifest_version": 3,
+        "template_commit": commit,
+        "template_version": version,
+        "files_updated": updated,
+        "files_added": added,
+        "files_dropped": len(dropped),
+        "dropped_entries": sorted(dropped),
+        "unknown_keys": unknown,
+        "warnings": warnings,
+        "manifest_written": True,
+    }
