@@ -187,6 +187,28 @@ def unknown_top_level_keys(manifest: dict) -> list[str]:
     return sorted(k for k in manifest if k not in KNOWN_TOP_LEVEL_V3)
 
 
+KNOWN_FILE_KEYS_V3 = {"hash", "ownership"}
+# The named v2 per-file fields migration drops (review §2.10). Anything else
+# on an entry is a consumer annotation: preserved and reported (review §12).
+SUPERSEDED_V2_FILE_KEYS = {
+    "templateHash", "templateRawHash", "localHash", "locallyModified",
+    "localPartHash", "templatePartHashAtSync", "resolution",
+}
+
+
+def carry_unknown_file_keys(old_entry: dict, new_entry: dict) -> tuple[dict, list[str]]:
+    """Merge the unknown keys of `old_entry` into `new_entry`; return the
+    merged entry and the sorted key names carried over."""
+    carried = sorted(
+        k for k in (old_entry or {})
+        if k not in KNOWN_FILE_KEYS_V3 and k not in SUPERSEDED_V2_FILE_KEYS
+    )
+    merged = dict(new_entry)
+    for k in carried:
+        merged[k] = old_entry[k]
+    return merged, carried
+
+
 # -------------------------
 # Key audit (once files with "audit": "keys")
 # -------------------------
@@ -745,13 +767,19 @@ def finalize_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules,
     warnings = list(rules.warnings)
 
     updated = 0
+    unknown_files: list[dict] = []
     for item in applied:
         fp = core._normalize_path(item["file_path"])
         entry = item["manifest_entry"]
         if entry["ownership"] == "template":
-            files[fp] = {"hash": format_hash(parse_hash(entry["hash"])), "ownership": "template"}
+            new_entry = {"hash": format_hash(parse_hash(entry["hash"])), "ownership": "template"}
         else:
-            files[fp] = {"ownership": "once"}
+            new_entry = {"ownership": "once"}
+        # Per-file annotations survive by server policy, from the on-disk
+        # entry -- the applied entry never carries them (review §12).
+        files[fp], carried = carry_unknown_file_keys(files.get(fp, {}), new_entry)
+        if carried:
+            unknown_files.append({"path": fp, "keys": carried})
         updated += 1
 
     added = 0
@@ -817,6 +845,7 @@ def finalize_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules,
         "files_dropped": len(dropped),
         "dropped_entries": sorted(dropped),
         "unknown_keys": unknown,
+        "unknown_file_keys": sorted(unknown_files, key=lambda d: d["path"]),
         "warnings": warnings,
         "manifest_written": True,
     }
@@ -889,21 +918,27 @@ def migrate_v2_to_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules) ->
     files: dict[str, dict] = {}
     dropped: list[str] = []
     redundant: list[str] = []
+    unknown_files: list[dict] = []
     for proj_rel, entry in manifest.get("files", {}).items():
         proj_rel = core._normalize_path(proj_rel)
         tpl_rel = rules.template_path_for(proj_rel)
         cls = rules.class_of(tpl_rel)
+        new_entry = None
         if cls == "template":
             hex_digest = parse_hash(entry.get("templateHash", ""))
             if hex_digest:
-                files[proj_rel] = {"hash": format_hash(hex_digest), "ownership": "template"}
+                new_entry = {"hash": format_hash(hex_digest), "ownership": "template"}
             else:
                 tpl_raw = core._read_file(core._template_file_path(manifest, tpl_rel))
-                files[proj_rel] = {"hash": format_hash(core._sha256(core._apply_placeholders(tpl_raw or "", placeholders))),
-                                   "ownership": "template"}
+                new_entry = {"hash": format_hash(core._sha256(core._apply_placeholders(tpl_raw or "", placeholders))),
+                             "ownership": "template"}
                 warnings.append(f"{proj_rel}: no templateHash in v2 entry -- baseline set to the current template")
         elif cls == "once":
-            files[proj_rel] = {"ownership": "once"}
+            new_entry = {"ownership": "once"}
+        if new_entry is not None:
+            files[proj_rel], carried = carry_unknown_file_keys(entry, new_entry)
+            if carried:
+                unknown_files.append({"path": proj_rel, "keys": carried})
         else:
             dropped.append(proj_rel)
             on_disk = core._read_file(pp / proj_rel)
@@ -941,6 +976,7 @@ def migrate_v2_to_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules) ->
         "gate_self_reference": gate_hits,
         "gate_unverified": gate_declared,
         "unknown_keys": unknown_top_level_keys(new_manifest),
+        "unknown_file_keys": sorted(unknown_files, key=lambda d: d["path"]),
         "warnings": warnings,
     }
 

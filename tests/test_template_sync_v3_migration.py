@@ -297,6 +297,7 @@ def test_migration_open_brain_manifest_shape(tmp_path):
     for i in range(3):
         entries[f"hooks/h{i}.sh"] = {"templateHash": ts._sha256(f"h{i}\n"), "localHash": ts._sha256("mine\n"),
                                      "locallyModified": True, "resolution": "keep-mine"}
+    entries["hooks/h0.sh"]["reason"] = "Project-specific config"     # batch 8: survives, reported
     repo, proj, commit = _mk_v2(tmp_path, PROJ_CLAUDE, extra_entries=entries)
     m = json.loads((proj / ".claude" / "template-manifest.json").read_text(encoding="utf-8"))
     m["lastSyncedVersion"] = "v2.3.0"
@@ -309,6 +310,9 @@ def test_migration_open_brain_manifest_shape(tmp_path):
     out = json.loads((proj / ".claude" / "template-manifest.json").read_text(encoding="utf-8"))
     assert out["template_version"] == "v2.3.0"                 # server-written
     assert out["lastSyncedVersion"] == "v2.3.0" and out["lastSyncedVersionOf"] == "claude-code-toolkit"
-    assert out["files"]["hooks/h0.sh"] == {"hash": "sha256:" + ts._sha256("h0\n"), "ownership": "template"}
+    assert out["files"]["hooks/h0.sh"] == {"hash": "sha256:" + ts._sha256("h0\n"), "ownership": "template",
+                                           "reason": "Project-specific config"}
+    assert out["files"]["hooks/h1.sh"] == {"hash": "sha256:" + ts._sha256("h1\n"), "ownership": "template"}
+    assert res["unknown_file_keys"] == [{"path": "hooks/h0.sh", "keys": ["reason"]}]
     assert "resolution" not in json.dumps(out["files"])
     assert len(out["files"]) == 26 + 3 + 2                       # agents, hooks, CLAUDE.md, settings.json

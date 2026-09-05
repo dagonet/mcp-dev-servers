@@ -170,3 +170,21 @@ def test_finalize_v3_drop_sweep_and_explicit_deletes(tmp_path):
     out = json.loads((proj / ".claude" / "template-manifest.json").read_text(encoding="utf-8"))
     assert list(out["files"]) == ["CLAUDE.md"]
     assert out["template_version"] is None
+
+
+def test_finalize_v3_preserves_per_file_unknown_keys(tmp_path):
+    # open-brain (batch 8): a hand-added per-file annotation must survive an
+    # applied entry that does not carry it, and be reported (review §12).
+    entry = dict(_tpl_entry("v0\n"), reason="Project-specific config", note="x")
+    repo, proj = _mk_v3(tmp_path, template={"CLAUDE.md": "v1\n"}, project={"CLAUDE.md": "v1\n"},
+                        entries={"CLAUDE.md": entry})
+    applied = json.dumps([
+        {"file_path": "CLAUDE.md", "manifest_entry": {"hash": "sha256:" + ts._sha256("v1\n"), "ownership": "template"}},
+    ])
+    res = _run(ts.template_finalize_sync(str(proj), applied))
+    assert res["unknown_file_keys"] == [{"path": "CLAUDE.md", "keys": ["note", "reason"]}]
+    out = json.loads((proj / ".claude" / "template-manifest.json").read_text(encoding="utf-8"))
+    assert out["files"]["CLAUDE.md"] == {
+        "hash": "sha256:" + ts._sha256("v1\n"), "ownership": "template",
+        "reason": "Project-specific config", "note": "x",
+    }
