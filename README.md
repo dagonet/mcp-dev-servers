@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/dagonet/mcp-dev-servers)
 
-> **Give Claude Code 95 tools that turn natural-language asks into real `git`, `gh`, `dotnet`, `cargo`, `uv`, and Ollama operations.** Seven MCP servers, one `pip install`, opt in per project — so "what changed since main?" becomes a structured diff and "are any NuGet packages vulnerable?" becomes a real audit.
+> **Give Claude Code 96 tools that turn natural-language asks into real `git`, `gh`, `dotnet`, `cargo`, `uv`, and Ollama operations.** Seven MCP servers, one `pip install`, opt in per project — so "what changed since main?" becomes a structured diff and "are any NuGet packages vulnerable?" becomes a real audit.
 
 ```
 You: what changed since main?
@@ -25,7 +25,7 @@ Built with [FastMCP](https://github.com/jlowin/fastmcp) and the [Model Context P
 | **dotnet-tools** | `mcp-dotnet-tools` | `mcp_dev_servers.dotnet_mcp` | 19 | .NET build, test, NuGet, EF migrations, code quality, coverage |
 | **ollama-tools** | `mcp-ollama-tools` | `mcp_dev_servers.ollama_mcp` | 6 | Local Ollama LLM operations (health, warmup, compression, JSON extraction) |
 | **rust-tools** | `mcp-rust-tools` | `mcp_dev_servers.rust_mcp` | 4 | Cargo build, test, clippy with structured diagnostics |
-| **template-sync-tools** | `mcp-template-sync-tools` | `mcp_dev_servers.template_sync_mcp` | 8 | Template manifest, status, diff, merge, placeholder ops, cross-variant sync |
+| **template-sync-tools** | `mcp-template-sync-tools` | `mcp_dev_servers.template_sync_mcp` | 9 | Template manifest (v2 and v3 ownership), status, diff, merge, migration, placeholder ops, cross-variant sync |
 | **python-tools** | `mcp-python-tools` | `mcp_dev_servers.python_tools_mcp` | 7 | Python dev workflows (wheel/sdist inspect, smoke install, pytest, ruff, uv build, coverage) |
 
 ## Prerequisites
@@ -257,15 +257,16 @@ Then grant tool permissions in your `settings.json` (user or project level):
 | `cargo_test` | Run tests and return results |
 | `cargo_clippy` | Lint with structured clippy diagnostics |
 
-### template-sync-tools (8 tools)
+### template-sync-tools (9 tools)
 
 | Tool | Description |
 |------|-------------|
 | `template_load_manifest` | Load and validate manifest (auto-migrates v1 to v2) |
 | `template_compute_status` | Per-file sync status (UP_TO_DATE, PROJECT_CUSTOM, AUTO_UPDATE, CONFLICT) |
 | `template_get_diff` | Unified diff with three-way merge support |
-| `template_apply_file` | Apply template/provided content or skip, returns manifest entry |
+| `template_apply_file` | Apply template/provided content (or skip, v2 only), returns manifest entry; under manifest v3 takes `backup_dir` and saves `<file>.pre-sync` + `.diff` before overwriting a locally edited file |
 | `template_finalize_sync` | Atomically write manifest after sync completes |
+| `template_migrate_manifest` | v2→v3 manifest migration: PROJECT-CUSTOM region + fenced out-of-region hunks to `.claude/rules/project.md`, `dry_run` preview |
 | `template_reverse_placeholders` | Deterministic reverse placeholder replacement (longest-first) |
 | `template_check_cross_variant` | Check which variants share identical file content |
 | `template_propagate_to_variants` | Write template-ready content to multiple variant directories |

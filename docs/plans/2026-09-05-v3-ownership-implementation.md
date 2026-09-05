@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.11, FastMCP (`mcp.server.fastmcp`), stdlib only (`re`, `difflib`, `json`, `pathlib`, `subprocess` via the existing `_run_git`), pytest. Run tests with `.venv/Scripts/python -m pytest -q` from the repo root (Windows, Git Bash).
 
-**Spec:** `docs/plans/2026-09-05-v3.1-ownership-server-review.md` (this repo; the agreed server contract, §2–§10) and `claude-code-toolkit` `docs/plans/2026-09-03-v3.1-ownership-model-spec.md` @ `247ef65e71c6ea8a71527b7c72fc307742dbf9ed` (branch `docs/v31-specs`, PR #83). The spec's §7 "Report fields" list names every field the skill and server share — the response keys in this plan must match it verbatim.
+**Spec:** `docs/plans/2026-09-05-v3.1-ownership-server-review.md` (this repo; the agreed server contract, §2–§10) and `claude-code-toolkit` `docs/plans/2026-09-03-v3.1-ownership-model-spec.md` @ `2b23958` (branch `docs/v31-specs`, PR #83; batch-7 corrections included). The spec's §7 "Report fields" list names every field the skill and server share — the response keys in this plan must match it verbatim.
 
 ## Global Constraints
 
@@ -63,8 +63,8 @@ OWNERSHIP = {
         {"pattern": "gitignore", "ownership": "once", "target": ".gitignore"},
         {
             "pattern": "PROJECT_CONTEXT.md", "ownership": "once", "audit": "keys",
-            "required_keys": ["Gate", "Test"],
-            "deprecated_keys": {"Gate Command": "Gate"},
+            "required_keys": ["Protected branches", "Gate"],
+            "deprecated_keys": {"Gate Command": "Gate", "Test Command": "Test"},
             "aliases": {"Build": ["Build (desktop)"]},
             "placeholder_map": {"Build": "BUILD_COMMAND", "Test": "TEST_COMMAND"},
         },
@@ -810,10 +810,11 @@ git commit -F <scratch file>   # "feat(template-sync): template_load_manifest is
 **Interfaces:**
 - Consumes: nothing new.
 - Produces:
-  - `KEY_LINE_RE = re.compile(r"^\*\*(?P<key>[^*\n]+?)\*\*:[ \t]*(?P<val>.*)$", re.M)`
+  - `KEY_LINE_RE = re.compile(r"^(?:[-*+][ \t]+)?\*\*(?P<key>[^*\n]+?)\*\*:[ \t]*(?P<val>.*)$", re.M)` — tolerates a list marker (review §11a)
   - `parse_keys(text: str) -> dict[str, str]` — key → value (first occurrence wins)
-  - `find_key(consumer_keys: dict, key: str, rule: dict) -> list[str]` — names in the consumer that satisfy `key` (exact, qualified `key (…)`, aliases)
-  - `audit_keys(proj_text: str, tpl_text: str, tpl_at_sync_text: str | None, rule: dict, placeholders: dict | None = None) -> dict` with `missing_required`, `optional_absent`, `placeholder_keys`, `deprecated_keys`, `required` (per-key detail: `value`, `matched_as`, `template_value`, `template_value_at_sync`, `template_default_changed`, `consumer_holds_old_default`), `placeholder_key_divergence` (from the rule's `placeholder_map`, review §10b), `warnings`
+  - `find_key(consumer_keys: dict, key: str, rule: dict) -> list[str]` — names in the consumer that satisfy `key` (exact, qualified `key (…)`, aliases) — used for OPTIONAL keys
+  - `exact_holdings(consumer_keys: dict, key: str, rule: dict) -> list[str]` — the hook's own match: exact `key` or a `deprecated_keys` spelling of it — used for REQUIRED keys (review §11b)
+  - `audit_keys(proj_text: str, tpl_text: str, tpl_at_sync_text: str | None, rule: dict, placeholders: dict | None = None) -> dict` with `missing_required`, `qualified_only` (`[{key, held_as, note}]`, review §11b), `optional_absent`, `placeholder_keys`, `deprecated_keys`, `required` (per-key detail: `value`, `matched_as`, `template_value`, `template_value_at_sync`, `template_default_changed`, `consumer_holds_old_default`), `placeholder_key_divergence` (from the rule's `placeholder_map`, review §10b), `warnings`
   - `gate_refs(consumer_keys: dict, rule: dict, rules: OwnershipRules) -> list[dict]` — `[{"key", "path"}]` direct self-references (review §9a)
   - `collect_gate_refs(pp: pathlib.Path, rules: OwnershipRules) -> tuple[list[dict], bool]` — hits over every audited once file, and whether any declares `**Gate**:`
 
@@ -835,8 +836,8 @@ from mcp_dev_servers import template_sync_v3 as v3
 AUDIT_RULE = OWNERSHIP["rules"][-1]
 
 
-def test_parse_keys_first_occurrence_wins():
-    text = "# Ctx\n**Gate**: make check\n**Test**: pytest\n**Gate**: other\nplain line\n"
+def test_parse_keys_first_occurrence_wins_and_list_marker():
+    text = "# Ctx\n**Gate**: make check\n- **Test**: pytest\n**Gate**: other\nplain line\n"
     assert v3.parse_keys(text) == {"Gate": "make check", "Test": "pytest"}
 
 
@@ -847,27 +848,55 @@ def test_find_key_exact_qualified_alias():
     assert v3.find_key(keys, "Test", AUDIT_RULE) == []
 
 
-def test_audit_reports_four_lists():
-    proj = "**Gate**: main\n**Build (desktop)**: cargo build\n**Gate Command**: old\n**Extra**: {{X}}\n**Mine**: 1\n"
-    tpl = "**Gate**: main master\n**Test**: cargo test\n**Build**: cargo build\n**Extra**: {{X}}\n**Notes**: n\n"
-    tpl_at_sync = "**Gate**: main\n**Test**: cargo test\n**Build**: cargo build\n**Extra**: {{X}}\n"
+def test_exact_holdings_is_the_hooks_match():
+    keys = {"Gate Command": "old", "Test (frontend unit)": "x", "Protected branches": "main"}
+    assert v3.exact_holdings(keys, "Gate", AUDIT_RULE) == ["Gate Command"]
+    assert v3.exact_holdings(keys, "Test", AUDIT_RULE) == []
+    assert v3.exact_holdings(keys, "Protected branches", AUDIT_RULE) == ["Protected branches"]
+
+
+def test_audit_reports_lists_and_required_detail():
+    proj = ("- **Protected branches**: main\n**Gate Command**: old\n**Build (desktop)**: cargo build\n"
+            "**Extra**: {{X}}\n**Mine**: 1\n")
+    tpl = ("**Protected branches**: main master\n**Gate**: g\n**Test**: cargo test\n"
+           "**Build**: cargo build\n**Extra**: {{X}}\n**Notes**: n\n")
+    tpl_at_sync = "**Protected branches**: main\n**Gate**: g\n**Test**: cargo test\n**Build**: cargo build\n**Extra**: {{X}}\n"
     res = v3.audit_keys(proj, tpl, tpl_at_sync, AUDIT_RULE)
-    assert res["missing_required"] == ["Test"]
-    assert res["optional_absent"] == ["Notes"]
+    assert res["missing_required"] == []                        # Gate held under its deprecated spelling
+    assert res["qualified_only"] == []
+    assert res["optional_absent"] == ["Test", "Notes"]          # Build satisfied by the qualified form
     assert res["placeholder_keys"] == ["Extra"]
     assert res["deprecated_keys"] == [{"key": "Gate Command", "replacement": "Gate"}]
-    gate = res["required"]["Gate"]
-    assert gate["value"] == "main"
-    assert gate["matched_as"] == ["Gate"]
-    assert gate["template_value"] == "main master"
-    assert gate["template_value_at_sync"] == "main"
-    assert gate["template_default_changed"] is True
-    assert gate["consumer_holds_old_default"] is True
+    pb = res["required"]["Protected branches"]
+    assert pb["value"] == "main"
+    assert pb["matched_as"] == ["Protected branches"]
+    assert pb["template_value"] == "main master"
+    assert pb["template_value_at_sync"] == "main"
+    assert pb["template_default_changed"] is True
+    assert pb["consumer_holds_old_default"] is True
+    assert res["required"]["Gate"]["matched_as"] == ["Gate Command"]
     assert res["warnings"] == []
 
 
+def test_audit_required_qualified_only_is_its_own_state():
+    # yutraffic: the hook matches **Test( Command)?**: exactly, so a qualified
+    # holding of a REQUIRED key must never read as present (review §11b).
+    proj = "**Protected branches**: main\n**Gate (frontend)**: g\n"
+    tpl = "**Protected branches**: main\n**Gate**: g\n"
+    res = v3.audit_keys(proj, tpl, None, AUDIT_RULE)
+    assert res["missing_required"] == []
+    assert res["qualified_only"] == [{
+        "key": "Gate", "held_as": ["Gate (frontend)"],
+        "note": "the hook matches **Gate**:/**Gate Command**: exactly and will not read it",
+    }]
+    assert "Gate" not in res["required"]
+    res2 = v3.audit_keys("**Protected branches**: main\n", tpl, None, AUDIT_RULE)
+    assert res2["missing_required"] == ["Gate"] and res2["qualified_only"] == []
+
+
 def test_audit_without_base_omits_default_flags():
-    res = v3.audit_keys("**Gate**: main\n**Test**: t\n", "**Gate**: main\n**Test**: t\n", None, AUDIT_RULE)
+    text = "**Protected branches**: main\n**Gate**: g\n"
+    res = v3.audit_keys(text, text, None, AUDIT_RULE)
     assert res["missing_required"] == []
     assert "template_default_changed" not in res["required"]["Gate"]
     assert res["warnings"] == ["audit_base_unavailable"]
@@ -893,6 +922,12 @@ def test_gate_refs_direct_only():
     # ARM A (open-brain): a wrapper outside template class passes the static check.
     assert v3.gate_refs({"Gate": "bash scripts/gate.sh", "Test": "t"}, AUDIT_RULE, rules) == []
     assert v3.gate_refs({"Gate": "none", "Test": "true"}, AUDIT_RULE, rules) == []
+    # open-brain's raw line: list marker + backticked value (review §11a).
+    keys_bt = v3.parse_keys("- **Gate**: `bash ./hooks/run-gate.sh`\n**Protected branches**: main\n")
+    assert v3.gate_refs(keys_bt, AUDIT_RULE, rules) == [{"key": "Gate", "path": "hooks/run-gate.sh"}]
+    # Decoration is stripped from the deprecated spelling too.
+    assert v3.gate_refs({"Gate Command": "`hooks/run-gate.sh`"}, AUDIT_RULE, rules) == [
+        {"key": "Gate Command", "path": "hooks/run-gate.sh"}]
 
 
 def test_collect_gate_refs(tmp_path):
@@ -917,7 +952,7 @@ Expected: FAIL — `AttributeError: ... 'parse_keys'`
 # Key audit (once files with "audit": "keys")
 # -------------------------
 
-KEY_LINE_RE = re.compile(r"^\*\*(?P<key>[^*\n]+?)\*\*:[ \t]*(?P<val>.*)$", re.M)
+KEY_LINE_RE = re.compile(r"^(?:[-*+][ \t]+)?\*\*(?P<key>[^*\n]+?)\*\*:[ \t]*(?P<val>.*)$", re.M)
 PLACEHOLDER_RE = re.compile(r"\{\{.*?\}\}")
 
 
@@ -950,6 +985,21 @@ def _norm_ws(s: str) -> str:
     return " ".join((s or "").split())
 
 
+def exact_holdings(consumer_keys: dict[str, str], key: str, rule: dict) -> list[str]:
+    """The hook's own match for a REQUIRED key: exact `**Key**:` or one of its
+    deprecated spellings (review §11b). Qualified/alias forms do not count."""
+    deprecated_map = dict(rule.get("deprecated_keys") or {})
+    out = [key] if key in consumer_keys else []
+    out += [old for old, new in deprecated_map.items() if new == key and old in consumer_keys]
+    return out
+
+
+def _hook_note(key: str, rule: dict) -> str:
+    deprecated_map = dict(rule.get("deprecated_keys") or {})
+    spellings = [f"**{key}**:"] + [f"**{old}**:" for old, new in deprecated_map.items() if new == key]
+    return f"the hook matches {'/'.join(spellings)} exactly and will not read it"
+
+
 def audit_keys(proj_text: str, tpl_text: str, tpl_at_sync_text: str | None, rule: dict,
                placeholders: dict | None = None) -> dict:
     proj = parse_keys(proj_text)
@@ -962,35 +1012,43 @@ def audit_keys(proj_text: str, tpl_text: str, tpl_at_sync_text: str | None, rule
         warnings.append("audit_base_unavailable")
 
     missing_required: list[str] = []
+    qualified_only: list[dict] = []
     optional_absent: list[str] = []
     detail: dict[str, dict] = {}
 
-    for key in tpl:
-        matched = find_key(proj, key, rule)
-        if key in required:
-            if not matched:
+    def _required(key: str) -> None:
+        held = exact_holdings(proj, key, rule)
+        if not held:
+            loose = find_key(proj, key, rule)
+            if loose:
+                qualified_only.append({"key": key, "held_as": loose, "note": _hook_note(key, rule)})
+            else:
                 missing_required.append(key)
-                continue
-            info = {
-                "value": proj[matched[0]],
-                "matched_as": matched,
-                "template_value": tpl[key],
-            }
-            if tpl_sync is not None:
-                at_sync = tpl_sync.get(key)
-                info["template_value_at_sync"] = at_sync
-                info["template_default_changed"] = _norm_ws(tpl[key]) != _norm_ws(at_sync or "")
-                info["consumer_holds_old_default"] = (
-                    at_sync is not None and _norm_ws(proj[matched[0]]) == _norm_ws(at_sync)
-                )
-            detail[key] = info
-        elif not matched:
+            return
+        info = {
+            "value": proj[held[0]],
+            "matched_as": held,
+            "template_value": tpl.get(key),
+        }
+        if tpl_sync is not None:
+            at_sync = tpl_sync.get(key)
+            info["template_value_at_sync"] = at_sync
+            info["template_default_changed"] = _norm_ws(tpl.get(key) or "") != _norm_ws(at_sync or "")
+            info["consumer_holds_old_default"] = (
+                at_sync is not None and _norm_ws(proj[held[0]]) == _norm_ws(at_sync)
+            )
+        detail[key] = info
+
+    for key in tpl:
+        if key in required:
+            _required(key)
+        elif not find_key(proj, key, rule):
             optional_absent.append(key)
 
     # Required keys the template itself lacks are still required.
     for key in required:
-        if key not in tpl and not find_key(proj, key, rule):
-            missing_required.append(key)
+        if key not in tpl:
+            _required(key)
 
     placeholder_keys = sorted(k for k, val in proj.items() if PLACEHOLDER_RE.search(val))
     deprecated = [
@@ -1009,6 +1067,7 @@ def audit_keys(proj_text: str, tpl_text: str, tpl_at_sync_text: str | None, rule
                                    "placeholder": ph_name, "placeholder_value": ph_value})
     return {
         "missing_required": missing_required,
+        "qualified_only": qualified_only,
         "optional_absent": optional_absent,
         "placeholder_keys": placeholder_keys,
         "deprecated_keys": deprecated,
@@ -1018,16 +1077,32 @@ def audit_keys(proj_text: str, tpl_text: str, tpl_at_sync_text: str | None, rule
     }
 
 
+def gate_tokens(value: str) -> list[str]:
+    """Tokenise a **Gate**:/**Test**: value the way run-gate.sh normalises it
+    (review §11a): surrounding backticks off the whole value and each token,
+    leading ./ dropped, a leading bash/sh token ignored."""
+    value = (value or "").strip().strip("`").strip()
+    toks = [core._normalize_path(t.strip("\"'`")) for t in value.split()]
+    if toks and toks[0] in ("bash", "sh"):
+        toks = toks[1:]
+    out = []
+    for t in toks:
+        while t.startswith("./"):
+            t = t[2:]
+        if t:
+            out.append(t)
+    return out
+
+
 def gate_refs(consumer_keys: dict[str, str], rule: dict, rules: OwnershipRules) -> list[dict]:
-    """Direct gate self-reference (review §9a): a whitespace token in a
-    required key's value that is a template-class path by the rules. Static
-    and direct-only -- a wrapper that calls the hook from elsewhere passes."""
+    """Direct gate self-reference (review §9a, §11a): a token in a required
+    key's value that is a template-class path by the rules. Static and
+    direct-only -- a wrapper that calls the hook from elsewhere passes."""
     out = []
     for key in rule.get("required_keys") or []:
-        for name in find_key(consumer_keys, key, rule):
-            for tok in consumer_keys[name].split():
-                tok = core._normalize_path(tok.strip("\"'`")).lstrip("./")
-                if tok and rules.class_of(rules.template_path_for(tok)) == "template":
+        for name in exact_holdings(consumer_keys, key, rule):
+            for tok in gate_tokens(consumer_keys[name]):
+                if rules.class_of(rules.template_path_for(tok)) == "template":
                     out.append({"key": name, "path": tok})
     return out
 
@@ -1044,7 +1119,7 @@ def collect_gate_refs(pp: pathlib.Path, rules: OwnershipRules) -> tuple[list[dic
         if text is None:
             continue
         keys = parse_keys(text)
-        if find_key(keys, "Gate", rule):
+        if exact_holdings(keys, "Gate", rule):
             declared = True
         hits.extend(gate_refs(keys, rule, rules))
     return hits, declared
@@ -1053,7 +1128,7 @@ def collect_gate_refs(pp: pathlib.Path, rules: OwnershipRules) -> tuple[list[dic
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `.venv/Scripts/python -m pytest tests/test_template_sync_v3_status.py -q`
-Expected: `7 passed`
+Expected: `9 passed`
 
 - [ ] **Step 5: Commit**
 
@@ -1233,7 +1308,7 @@ def encoding_drift(proj_flags: dict, tpl_flags: dict) -> list[str]:
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `.venv/Scripts/python -m pytest tests/test_template_sync_v3_status.py -q`
-Expected: `10 passed`
+Expected: `13 passed`
 
 - [ ] **Step 5: Commit**
 
@@ -1553,7 +1628,7 @@ Extend the docstring's Returns paragraph with:
 - [ ] **Step 5: Run the tests and the full suite**
 
 Run: `.venv/Scripts/python -m pytest tests/test_template_sync_v3_status.py -q && .venv/Scripts/python -m pytest -q`
-Expected: `15 passed` then `135 passed`
+Expected: `17 passed` then `135 passed`
 
 - [ ] **Step 6: Commit**
 
@@ -2786,7 +2861,7 @@ Replace the `## [Unreleased]` line and the empty line after it with:
 
 ### Added
 
-- `template-sync-tools`: **manifest v3 — three-class ownership** (`template` / `once` / `project`) per the toolkit's ownership spec (`docs/plans/2026-09-03-v3.1-ownership-model-spec.md` @ 247ef65e; server contract in `docs/plans/2026-09-05-v3.1-ownership-server-review.md`). Entries carry `hash` (`sha256:`-prefixed, the placeholder-replaced template hash at sync) and `ownership`; top-level `manifest_version`, `template_version` (nearest reachable tag whose tracked tree is identical to `template_commit`, never `git describe`; `null` + `untagged_template_tree` when none), `template_commit` (`lastSynced` read as an alias), `requires_server`. Classes come from `<templateRepo>/templates/ownership.json` (first matching rule wins, `**` globs, `target` renames such as `gitignore` → `.gitignore`, `tracked_paths`); a template path with no rule is listed under `unclassified_template_files` and never applied.
+- `template-sync-tools`: **manifest v3 — three-class ownership** (`template` / `once` / `project`) per the toolkit's ownership spec (`docs/plans/2026-09-03-v3.1-ownership-model-spec.md` @ 2b23958; server contract in `docs/plans/2026-09-05-v3.1-ownership-server-review.md`). Entries carry `hash` (`sha256:`-prefixed, the placeholder-replaced template hash at sync) and `ownership`; top-level `manifest_version`, `template_version` (nearest reachable tag whose tracked tree is identical to `template_commit`, never `git describe`; `null` + `untagged_template_tree` when none), `template_commit` (`lastSynced` read as an alias), `requires_server`. Classes come from `<templateRepo>/templates/ownership.json` (first matching rule wins, `**` globs, `target` renames such as `gitignore` → `.gitignore`, `tracked_paths`); a template path with no rule is listed under `unclassified_template_files` and never applied.
 - `template-sync-tools`: `template_migrate_manifest(project_path, backup_dir, dry_run)` — explicit v2→v3 migration: PROJECT-CUSTOM region of `CLAUDE.md` and the out-of-region edits (diffed against the template at `template_commit`, falling back to the `template_version` tag, never the current template) go to `.claude/rules/project.md` with the hunks fenced as ```` ```diff ````; the header records `migration-base`. Idempotent; an existing `project.md` is never overwritten; `dry_run` returns everything without writing; `redundant_project_file` names byte-identical copies of files that became project-owned (suggestion only, never deleted); unknown top-level keys are preserved and reported as `unknown_keys`.
 - `template-sync-tools`: `template_apply_file` gains `backup_dir`; a `LOCAL_EDITED` template-class file is refused without it and otherwise saved as `<file>.pre-sync` + `<file>.diff` before the overwrite. `once` files are created when missing and never touched again.
 - `template-sync-tools`: `template_compute_status` for v3 reports `local_diff` per `LOCAL_EDITED` file, `orphans` (consumer files matching a template-class rule with no manifest entry; informational only, silenced by an explicit `project` rule), and a `key_audit` for `once` rules with `"audit": "keys"`: `missing_required`, `optional_absent`, `placeholder_keys`, `deprecated_keys`, resolved values with `template_default_changed` / `consumer_holds_old_default`, qualified-key and alias matching, and `template_notes_changed` hunks.
@@ -2814,6 +2889,20 @@ git commit -F <scratch file>   # "release: v0.3.0 — manifest v3 three-class ow
 Do **not** tag or publish here — the release PR, tag `v0.3.0` and the GitHub release follow the merge, the same way v0.2.1 did (PR → squash merge → annotated tag → `github_release_create`), and only after the toolkit controller confirms the combined spec amendment sha so the CHANGELOG can cite it.
 
 ---
+
+## Execution notes (2026-09-05)
+
+- The version bump to 0.3.0 was pulled forward from Task 11 to before Task 3: the
+  `requires_server` gate is only testable once the server reports that version.
+- Task 5's `notes_hunks` filters key-line changes out of each hunk instead of dropping
+  mixed hunks: with one line of context a note change and a key change share a hunk.
+- Task 10's test lives in `tests/test_template_sync_diff_alias.py` (self-contained)
+  rather than appended to the merge test file.
+- `tests/test_smoke.py` pins the tool count per server; `template_sync_mcp` went 8 → 9.
+- Batch 7 (read-back corrections, spec `2b23958`) landed before Task 4 was built and is
+  in the code as planned; batch 8 (per-file unknown keys preserved + `unknown_file_keys`)
+  landed as a follow-up commit after Task 10.
+- Full suite at the end of Task 10 + batch 8: 163 passed.
 
 ## Self-review
 
