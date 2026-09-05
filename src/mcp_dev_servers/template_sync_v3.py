@@ -363,3 +363,93 @@ def collect_gate_refs(pp: pathlib.Path, rules: OwnershipRules) -> tuple[list[dic
             declared = True
         hits.extend(gate_refs(keys, rule, rules))
     return hits, declared
+
+
+# -------------------------
+# Orphans, template notes, encoding flags
+# -------------------------
+
+def static_prefix(pattern: str) -> str:
+    segs = []
+    for seg in core._normalize_path(pattern).split("/"):
+        if any(c in seg for c in "*?["):
+            break
+        segs.append(seg)
+    return "/".join(segs)
+
+
+def find_orphans(project_root: pathlib.Path, rules: OwnershipRules,
+                 manifest_keys: set[str], template_files: set[str]) -> list[str]:
+    """Consumer files that match a template-class rule, sit in no manifest entry
+    and are not shipped by the template (review §5b). Informational only."""
+    found: set[str] = set()
+    for rule in rules.template_class_rules():
+        rx = glob_to_regex(rule["pattern"])
+        root = project_root / static_prefix(rule["pattern"])
+        if root.is_file():
+            candidates = [root]
+        elif root.is_dir():
+            candidates = [p for p in root.rglob("*") if p.is_file()]
+        else:
+            continue
+        for p in candidates:
+            rel = core._normalize_path(str(p.relative_to(project_root)))
+            if not rx.match(rel):
+                continue
+            # First match over ALL rules decides; a preceding `project` rule silences.
+            if rules.class_of(rel) != "template":
+                continue
+            if rel in manifest_keys or rel in template_files:
+                continue
+            found.add(rel)
+    return sorted(found)
+
+
+def notes_hunks(tpl_at_sync: str, tpl_now: str) -> list[str]:
+    """Hunks of the template-side diff that touch no **Key**: line (review §7c)."""
+    from difflib import unified_diff
+    lines = list(unified_diff(
+        tpl_at_sync.splitlines(keepends=True), tpl_now.splitlines(keepends=True),
+        fromfile="template@sync", tofile="template@now", n=1,
+    ))
+    hunks: list[list[str]] = []
+    for line in lines:
+        if line.startswith("@@"):
+            hunks.append([line])
+        elif hunks and not line.startswith(("---", "+++")):
+            hunks[-1].append(line)
+    out = []
+    for h in hunks:
+        # Key-line changes are the audit's business; drop them from the hunk
+        # and keep it only if a non-key change remains (a MIXED hunk keeps
+        # its note part -- panoscribe's shape).
+        kept = [h[0]] + [
+            l for l in h[1:]
+            if not (l[:1] in "+-" and KEY_LINE_RE.match(l[1:].rstrip("\n")))
+        ]
+        if not any(l[:1] in "+-" for l in kept[1:]):
+            continue
+        out.append("".join(kept))
+    return out
+
+
+NO_FLAGS = {"bom": False, "crlf": False}
+
+
+def read_with_flags(path: pathlib.Path) -> tuple[str | None, dict]:
+    """Read once as bytes; return the text the way _read_file would see it
+    (BOM stripped, CRLF/CR folded to LF) plus the encoding flags (review §8)."""
+    try:
+        data = path.read_bytes()
+    except (FileNotFoundError, OSError):
+        return None, dict(NO_FLAGS)
+    flags = {"bom": data.startswith(b"\xef\xbb\xbf"), "crlf": b"\r\n" in data}
+    text = data.decode("utf-8", errors="replace")
+    if text.startswith("\ufeff"):
+        text = text[1:]
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return text, flags
+
+
+def encoding_drift(proj_flags: dict, tpl_flags: dict) -> list[str]:
+    return sorted(k for k in ("bom", "crlf") if bool(proj_flags.get(k)) != bool(tpl_flags.get(k)))

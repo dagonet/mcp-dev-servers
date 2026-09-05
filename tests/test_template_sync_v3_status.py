@@ -180,3 +180,55 @@ def test_collect_gate_refs(tmp_path):
     assert v3.collect_gate_refs(proj, rules) == ([{"key": "Gate", "path": "hooks/run-gate.sh"}], True)
     (proj / "PROJECT_CONTEXT.md").write_text("**Test**: t\n", encoding="utf-8")
     assert v3.collect_gate_refs(proj, rules) == ([], False)
+
+
+# --- Task 5: orphans, template notes, encoding flags --------------------------
+
+
+def test_static_prefix():
+    assert v3.static_prefix("hooks/**") == "hooks"
+    assert v3.static_prefix(".claude/agents/*.md") == ".claude/agents"
+    assert v3.static_prefix("CLAUDE.md") == "CLAUDE.md"
+    assert v3.static_prefix("*.md") == ""
+
+
+def test_find_orphans_matches_template_rules_only(tmp_path):
+    repo, proj = _mk_v3(
+        tmp_path,
+        template={"hooks/gate.sh": "g", ".claude/agents/coder.md": "c"},
+        project={
+            "hooks/gate.sh": "g", "hooks/mine.sh": "m",
+            ".claude/agents/coder.md": "c", ".claude/agents/game-tester.md": "t",
+            ".claude/agents/local-notes.md": "n",
+            ".claude/rules/project.md": "p", "src/main.py": "x",
+            "preflight.sh": "gate logic on purpose\n",       # panoscribe's escape hatch (review §10c)
+        },
+        entries={"hooks/gate.sh": _tpl_entry("g"), ".claude/agents/coder.md": _tpl_entry("c")},
+        ownership={"tracked_paths": ["templates", "hooks"],
+                   "rules": OWNERSHIP["rules"] + [{"pattern": "*.sh", "ownership": "template"}]},
+    )
+    rules = v3.load_ownership(str(repo))
+    orphans = v3.find_orphans(proj, rules, set(["hooks/gate.sh", ".claude/agents/coder.md"]),
+                              set(["hooks/gate.sh", ".claude/agents/coder.md"]))
+    assert orphans == [".claude/agents/game-tester.md", "hooks/mine.sh", "preflight.sh"]
+
+
+def test_notes_hunks_skip_key_line_changes():
+    old = "# Ctx\n<!-- how Gate is parsed -->\n**Gate**: a\n**Test**: t\n"
+    new = "# Ctx\n<!-- how Gate and Test are parsed -->\n**Gate**: b\n**Test**: t\n"
+    hunks = v3.notes_hunks(old, new)
+    assert len(hunks) == 1
+    assert "how Gate and Test are parsed" in hunks[0]
+    assert "**Gate**: b" not in hunks[0]
+
+
+def test_read_with_flags_and_drift(tmp_path):
+    p = tmp_path / "f.txt"
+    p.write_bytes(b"\xef\xbb\xbfa\r\nb\r\n")
+    text, flags = v3.read_with_flags(p)
+    assert text == "a\nb\n"
+    assert flags == {"bom": True, "crlf": True}
+    assert ts._sha256(text) == ts._sha256("a\nb\n")
+    assert v3.encoding_drift(flags, {"bom": False, "crlf": False}) == ["bom", "crlf"]
+    assert v3.encoding_drift(flags, flags) == []
+    assert v3.read_with_flags(tmp_path / "missing") == (None, {"bom": False, "crlf": False})
