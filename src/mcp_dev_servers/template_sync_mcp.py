@@ -1014,7 +1014,7 @@ async def template_get_diff(
     Supports four diff types:
     - template_changes: what changed in the template since last sync
     - local_changes: what the user changed since last sync
-    - full: template-current vs project-current
+    - full: template-current vs project-current ("unified" is an alias)
     - three_way: three-way merge with conflict markers
 
     For three_way, reconstructs the common ancestor via git show at lastSynced commit.
@@ -1023,7 +1023,7 @@ async def template_get_diff(
     Args:
         project_path: Path to the project root directory
         file_path: Relative path of the file (e.g. "CLAUDE.md")
-        diff_type: One of: template_changes, local_changes, full, three_way
+        diff_type: One of: template_changes, local_changes, full, unified, three_way
 
     Returns:
         JSON with content versions, unified diff, and merge result (for three_way)
@@ -1087,7 +1087,7 @@ async def template_get_diff(
         result["unified_diff"] = "".join(diff)
         result["has_changes"] = len(diff) > 0
 
-    elif diff_type == "full":
+    elif diff_type in ("full", "unified"):
         diff = list(unified_diff(
             tpl_current.splitlines(keepends=True),
             proj_current.splitlines(keepends=True),
