@@ -122,3 +122,66 @@ def load_ownership(template_repo: str) -> OwnershipRules | None:
             f"falls back to {tracked}"
         )
     return OwnershipRules(rules, list(tracked), warnings)
+
+
+# -------------------------
+# Manifest v3 helpers
+# -------------------------
+
+HASH_RE = re.compile(r"^(?:sha256:)?([0-9a-f]{64})$")
+
+KNOWN_TOP_LEVEL_V3 = {
+    "manifest_version", "template_version", "template_commit", "lastSynced",
+    "variant", "templateRepo", "placeholders", "requires_server", "files",
+    # v2 keys that migration removes; listed so they are never reported as unknown
+    "version",
+}
+
+
+def is_v3(manifest: dict) -> bool:
+    return manifest.get("manifest_version") == MANIFEST_VERSION_V3
+
+
+def manifest_commit(manifest: dict) -> str:
+    """template_commit, with lastSynced accepted as a read alias (review §2.1)."""
+    return manifest.get("template_commit") or manifest.get("lastSynced") or ""
+
+
+def parse_hash(value: str) -> str:
+    m = HASH_RE.match(value or "")
+    return m.group(1) if m else ""
+
+
+def format_hash(hex_digest: str) -> str:
+    return "sha256:" + hex_digest
+
+
+def parse_version(s: str) -> tuple[int, int, int]:
+    parts = s.strip().split(".")
+    if len(parts) != 3 or not all(p.isdigit() for p in parts):
+        raise ValueError(f"not a X.Y.Z version: {s!r}")
+    return int(parts[0]), int(parts[1]), int(parts[2])
+
+
+def requires_server_satisfied(spec: str, server_version: str) -> tuple[bool, str]:
+    """Only the `>=X.Y.Z` form the toolkit writes is supported (review §2.5)."""
+    spec = (spec or "").strip()
+    if not spec:
+        return True, ""
+    if not spec.startswith(">="):
+        return False, f"requires_server {spec!r}: only the '>=X.Y.Z' form is supported"
+    try:
+        floor = parse_version(spec[2:])
+        have = parse_version(server_version)
+    except ValueError as e:
+        return False, f"requires_server {spec!r}: {e}"
+    if have < floor:
+        return False, (
+            f"manifest requires server {spec}, this server is {server_version} -- "
+            "upgrade mcp-dev-servers and restart the MCP server"
+        )
+    return True, ""
+
+
+def unknown_top_level_keys(manifest: dict) -> list[str]:
+    return sorted(k for k in manifest if k not in KNOWN_TOP_LEVEL_V3)

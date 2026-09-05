@@ -22,6 +22,8 @@ import time
 from difflib import SequenceMatcher, unified_diff
 from mcp.server.fastmcp import FastMCP
 
+from . import __version__
+
 mcp = FastMCP("template-sync-tools")
 
 _SUBPROCESS_FLAGS = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
@@ -242,7 +244,12 @@ def _git_show_file(repo: str, commit: str, file_path: str) -> str | None:
 
 
 def _load_manifest(project_path: pathlib.Path) -> tuple[dict | None, list[str]]:
-    """Load and parse the manifest file. Returns (manifest, errors)."""
+    """Load and parse the manifest file. Returns (manifest, errors).
+
+    v3 manifests (manifest_version == 3) require template_commit and
+    requires_server on top of the v2 fields; lastSynced is accepted as an
+    alias of template_commit.
+    """
     manifest_path = project_path / ".claude" / "template-manifest.json"
     content = _read_file(manifest_path)
     if content is None:
@@ -253,7 +260,12 @@ def _load_manifest(project_path: pathlib.Path) -> tuple[dict | None, list[str]]:
         return None, [f"Invalid JSON in manifest: {e}"]
 
     errors = []
-    for field in ("variant", "templateRepo", "placeholders", "files"):
+    required = ["variant", "templateRepo", "placeholders", "files"]
+    if manifest.get("manifest_version") == 3:
+        required += ["requires_server"]
+        if not (manifest.get("template_commit") or manifest.get("lastSynced")):
+            errors.append("Missing required field: template_commit")
+    for field in required:
         if field not in manifest:
             errors.append(f"Missing required field: {field}")
     return manifest, errors
@@ -654,6 +666,10 @@ async def template_load_manifest(project_path: str) -> str:
     """
     Load and validate the template manifest from a project.
     Auto-migrates v1 manifests to v2 format by computing missing hashes.
+    A v3 manifest is validated against requires_server and returns
+    server_version; a v2 manifest reports migration_required when the
+    template repo ships templates/ownership.json (call
+    template_migrate_manifest before any other step).
 
     Args:
         project_path: Path to the project root directory
@@ -664,12 +680,50 @@ async def template_load_manifest(project_path: str) -> str:
     pp = pathlib.Path(project_path).resolve()
     manifest, errors = _load_manifest(pp)
     if manifest is None:
-        return json.dumps({"valid": False, "errors": errors}, ensure_ascii=False)
+        return json.dumps({"valid": False, "errors": errors, "server_version": __version__}, ensure_ascii=False)
 
     if errors:
-        return json.dumps({"valid": False, "errors": errors}, ensure_ascii=False)
+        return json.dumps({"valid": False, "errors": errors, "server_version": __version__}, ensure_ascii=False)
+
+    from . import template_sync_v3 as v3
 
     warnings = []
+    template_dir = _get_template_dir(manifest)
+    if not template_dir.is_dir():
+        errors.append(
+            f"Template directory not found: {template_dir}. "
+            f"Update templateRepo in .claude/template-manifest.json."
+        )
+
+    if v3.is_v3(manifest):
+        ok, reason = v3.requires_server_satisfied(manifest.get("requires_server", ""), __version__)
+        if not ok:
+            errors.append(reason)
+        rules = v3.load_ownership(manifest["templateRepo"]) if not errors else None
+        if not errors and rules is None:
+            errors.append(
+                f"manifest v3 needs {v3.OWNERSHIP_FILE} in the template repo -- "
+                "the toolkit checkout predates v3.1"
+            )
+        if rules is not None:
+            warnings.extend(rules.warnings)
+        return json.dumps({
+            "valid": len(errors) == 0,
+            "manifest_version": 3,
+            "server_version": __version__,
+            "migration_required": False,
+            "variant": manifest.get("variant", ""),
+            "templateRepo": manifest.get("templateRepo", ""),
+            "template_commit": v3.manifest_commit(manifest),
+            "template_version": manifest.get("template_version"),
+            "requires_server": manifest.get("requires_server", ""),
+            "placeholders": manifest.get("placeholders", {}),
+            "files": manifest.get("files", {}),
+            "unknown_keys": v3.unknown_top_level_keys(manifest),
+            "errors": errors,
+            "warnings": warnings,
+        }, ensure_ascii=False)
+
     version = manifest.get("version", 1)
 
     # Auto-migrate v1 -> v2
@@ -697,17 +751,16 @@ async def template_load_manifest(project_path: str) -> str:
         manifest["version"] = MANIFEST_VERSION
         warnings.append("v1 -> v2 migration complete. Run sync to persist updated manifest.")
 
-    # Validate template repo exists
-    template_dir = _get_template_dir(manifest)
-    if not template_dir.is_dir():
-        errors.append(
-            f"Template directory not found: {template_dir}. "
-            f"Update templateRepo in .claude/template-manifest.json."
-        )
+    # A v2 manifest migrates to v3 only when the toolkit checkout ships the
+    # ownership table -- without it the server behaves exactly as 0.2.x.
+    migration_required = v3.load_ownership(manifest["templateRepo"]) is not None
 
     return json.dumps({
         "valid": len(errors) == 0,
         "version": manifest.get("version", 1),
+        "manifest_version": manifest.get("version", 1),
+        "server_version": __version__,
+        "migration_required": migration_required,
         "variant": manifest.get("variant", ""),
         "templateRepo": manifest.get("templateRepo", ""),
         "lastSynced": manifest.get("lastSynced", ""),
