@@ -22,6 +22,8 @@ import time
 from difflib import SequenceMatcher, unified_diff
 from mcp.server.fastmcp import FastMCP
 
+from . import __version__
+
 mcp = FastMCP("template-sync-tools")
 
 _SUBPROCESS_FLAGS = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
@@ -242,7 +244,12 @@ def _git_show_file(repo: str, commit: str, file_path: str) -> str | None:
 
 
 def _load_manifest(project_path: pathlib.Path) -> tuple[dict | None, list[str]]:
-    """Load and parse the manifest file. Returns (manifest, errors)."""
+    """Load and parse the manifest file. Returns (manifest, errors).
+
+    v3 manifests (manifest_version == 3) require template_commit and
+    requires_server on top of the v2 fields; lastSynced is accepted as an
+    alias of template_commit.
+    """
     manifest_path = project_path / ".claude" / "template-manifest.json"
     content = _read_file(manifest_path)
     if content is None:
@@ -253,7 +260,12 @@ def _load_manifest(project_path: pathlib.Path) -> tuple[dict | None, list[str]]:
         return None, [f"Invalid JSON in manifest: {e}"]
 
     errors = []
-    for field in ("variant", "templateRepo", "placeholders", "files"):
+    required = ["variant", "templateRepo", "placeholders", "files"]
+    if manifest.get("manifest_version") == 3:
+        required += ["requires_server"]
+        if not (manifest.get("template_commit") or manifest.get("lastSynced")):
+            errors.append("Missing required field: template_commit")
+    for field in required:
         if field not in manifest:
             errors.append(f"Missing required field: {field}")
     return manifest, errors
@@ -654,6 +666,10 @@ async def template_load_manifest(project_path: str) -> str:
     """
     Load and validate the template manifest from a project.
     Auto-migrates v1 manifests to v2 format by computing missing hashes.
+    A v3 manifest is validated against requires_server and returns
+    server_version; a v2 manifest reports migration_required when the
+    template repo ships templates/ownership.json (call
+    template_migrate_manifest before any other step).
 
     Args:
         project_path: Path to the project root directory
@@ -664,12 +680,50 @@ async def template_load_manifest(project_path: str) -> str:
     pp = pathlib.Path(project_path).resolve()
     manifest, errors = _load_manifest(pp)
     if manifest is None:
-        return json.dumps({"valid": False, "errors": errors}, ensure_ascii=False)
+        return json.dumps({"valid": False, "errors": errors, "server_version": __version__}, ensure_ascii=False)
 
     if errors:
-        return json.dumps({"valid": False, "errors": errors}, ensure_ascii=False)
+        return json.dumps({"valid": False, "errors": errors, "server_version": __version__}, ensure_ascii=False)
+
+    from . import template_sync_v3 as v3
 
     warnings = []
+    template_dir = _get_template_dir(manifest)
+    if not template_dir.is_dir():
+        errors.append(
+            f"Template directory not found: {template_dir}. "
+            f"Update templateRepo in .claude/template-manifest.json."
+        )
+
+    if v3.is_v3(manifest):
+        ok, reason = v3.requires_server_satisfied(manifest.get("requires_server", ""), __version__)
+        if not ok:
+            errors.append(reason)
+        rules = v3.load_ownership(manifest["templateRepo"]) if not errors else None
+        if not errors and rules is None:
+            errors.append(
+                f"manifest v3 needs {v3.OWNERSHIP_FILE} in the template repo -- "
+                "the toolkit checkout predates v3.1"
+            )
+        if rules is not None:
+            warnings.extend(rules.warnings)
+        return json.dumps({
+            "valid": len(errors) == 0,
+            "manifest_version": 3,
+            "server_version": __version__,
+            "migration_required": False,
+            "variant": manifest.get("variant", ""),
+            "templateRepo": manifest.get("templateRepo", ""),
+            "template_commit": v3.manifest_commit(manifest),
+            "template_version": manifest.get("template_version"),
+            "requires_server": manifest.get("requires_server", ""),
+            "placeholders": manifest.get("placeholders", {}),
+            "files": manifest.get("files", {}),
+            "unknown_keys": v3.unknown_top_level_keys(manifest),
+            "errors": errors,
+            "warnings": warnings,
+        }, ensure_ascii=False)
+
     version = manifest.get("version", 1)
 
     # Auto-migrate v1 -> v2
@@ -697,17 +751,16 @@ async def template_load_manifest(project_path: str) -> str:
         manifest["version"] = MANIFEST_VERSION
         warnings.append("v1 -> v2 migration complete. Run sync to persist updated manifest.")
 
-    # Validate template repo exists
-    template_dir = _get_template_dir(manifest)
-    if not template_dir.is_dir():
-        errors.append(
-            f"Template directory not found: {template_dir}. "
-            f"Update templateRepo in .claude/template-manifest.json."
-        )
+    # A v2 manifest migrates to v3 only when the toolkit checkout ships the
+    # ownership table -- without it the server behaves exactly as 0.2.x.
+    migration_required = v3.load_ownership(manifest["templateRepo"]) is not None
 
     return json.dumps({
         "valid": len(errors) == 0,
         "version": manifest.get("version", 1),
+        "manifest_version": manifest.get("version", 1),
+        "server_version": __version__,
+        "migration_required": migration_required,
         "variant": manifest.get("variant", ""),
         "templateRepo": manifest.get("templateRepo", ""),
         "lastSynced": manifest.get("lastSynced", ""),
@@ -772,6 +825,14 @@ async def template_compute_status(
         JSON with per-file status, new/deleted file lists, and summary counts,
         including `deviating` -- genuine deviations only (region-only
         differences are not counted).
+
+        For a v3 manifest the statuses are IDENTICAL / TEMPLATE_UPDATED /
+        LOCAL_EDITED / TEMPLATE_DELETED (template class) and PRESENT / MISSING
+        (once class); the result also carries `orphans`,
+        `unclassified_template_files`, `local_diff` per LOCAL_EDITED file,
+        `key_audit` per audited once file, `encoding_drift` per file (BOM/EOL
+        only differences, informational), and `gate_self_reference` /
+        `gate_unverified` at top level. CONFLICT never appears for v3.
     """
     pp = pathlib.Path(project_path).resolve()
     manifest, errors = _load_manifest(pp)
@@ -782,6 +843,13 @@ async def template_compute_status(
         manifest["templateRepo"] = template_repo
     if variant:
         manifest["variant"] = variant
+
+    from . import template_sync_v3 as v3
+    if v3.is_v3(manifest):
+        rules = v3.load_ownership(manifest["templateRepo"])
+        if rules is None:
+            return json.dumps({"error": f"manifest v3 needs {v3.OWNERSHIP_FILE} in the template repo"}, ensure_ascii=False)
+        return json.dumps(v3.compute_status_v3(pp, manifest, rules), ensure_ascii=False)
 
     placeholders = manifest.get("placeholders", {})
     template_dir = _get_template_dir(manifest)
@@ -946,7 +1014,7 @@ async def template_get_diff(
     Supports four diff types:
     - template_changes: what changed in the template since last sync
     - local_changes: what the user changed since last sync
-    - full: template-current vs project-current
+    - full: template-current vs project-current ("unified" is an alias)
     - three_way: three-way merge with conflict markers
 
     For three_way, reconstructs the common ancestor via git show at lastSynced commit.
@@ -955,7 +1023,7 @@ async def template_get_diff(
     Args:
         project_path: Path to the project root directory
         file_path: Relative path of the file (e.g. "CLAUDE.md")
-        diff_type: One of: template_changes, local_changes, full, three_way
+        diff_type: One of: template_changes, local_changes, full, unified, three_way
 
     Returns:
         JSON with content versions, unified diff, and merge result (for three_way)
@@ -1019,7 +1087,7 @@ async def template_get_diff(
         result["unified_diff"] = "".join(diff)
         result["has_changes"] = len(diff) > 0
 
-    elif diff_type == "full":
+    elif diff_type in ("full", "unified"):
         diff = list(unified_diff(
             tpl_current.splitlines(keepends=True),
             proj_current.splitlines(keepends=True),
@@ -1075,6 +1143,7 @@ async def template_apply_file(
     file_path: str,
     source: str = "template",
     content: str = "",
+    backup_dir: str = "",
 ) -> str:
     """
     Apply a template file to the project and return the updated manifest entry.
@@ -1091,6 +1160,10 @@ async def template_apply_file(
               reporting; the CONFLICT the next status call reports comes from
               the recorded part hashes, not from that field)
         content: File content to write (only used when source="provided")
+        backup_dir: Manifest v3 only. Directory that receives `<file>.pre-sync`
+            and `<file>.diff` before a LOCAL_EDITED template-class file is
+            overwritten. Required in that state -- the call is refused without
+            it. Ignored for v2 manifests.
 
     Returns:
         JSON with the new manifest entry for this file (hashes, modification
@@ -1108,6 +1181,16 @@ async def template_apply_file(
         return json.dumps({"error": errors[0]}, ensure_ascii=False)
 
     placeholders = manifest.get("placeholders", {})
+
+    from . import template_sync_v3 as v3
+    if v3.is_v3(manifest):
+        rules = v3.load_ownership(manifest["templateRepo"])
+        if rules is None:
+            return json.dumps({"error": f"manifest v3 needs {v3.OWNERSHIP_FILE} in the template repo"}, ensure_ascii=False)
+        return json.dumps(
+            v3.apply_file_v3(pp, manifest, rules, file_path, source, content, backup_dir),
+            ensure_ascii=False,
+        )
 
     # Read current template content
     tpl_raw = _read_file(_template_file_path(manifest, file_path))
@@ -1197,9 +1280,10 @@ async def template_apply_file(
 @mcp.tool()
 async def template_finalize_sync(
     project_path: str,
-    applied_files: str,
+    applied_files: str = "[]",
     new_files: str = "[]",
     deleted_files: str = "[]",
+    applied_files_path: str = "",
 ) -> str:
     """
     Finalize a sync operation by writing the updated manifest.
@@ -1220,19 +1304,41 @@ async def template_finalize_sync(
         deleted_files: JSON array of relative paths the project deliberately
             removed; their entries are dropped even if the template still
             ships the file (optional)
+        applied_files_path: Path to a local JSON file holding the same array
+            as applied_files, written by the caller from the tool results so
+            nothing is retyped. When given, applied_files is ignored.
 
     Returns:
-        JSON confirmation with counts and the dropped entries
+        JSON confirmation with counts, the dropped entries, and what was
+        consumed: `consumed_entries` and `consumed` = [{path, hash}] with the
+        hash exactly as stored (sha256:-prefixed under v3, templateHash under
+        v2) for the caller's post-finalize self-check.
+
+    Manifest v3: entries carry `hash` (sha256:-prefixed) and `ownership`;
+    `template_commit` is HEAD of the template repo and `template_version` the
+    nearest reachable tag whose tracked tree is identical (null when none).
+    Unknown top-level keys are preserved and listed in `unknown_keys`.
     """
     pp = pathlib.Path(project_path).resolve()
     manifest, errors = _load_manifest(pp)
     if manifest is None:
         return json.dumps({"error": errors[0]}, ensure_ascii=False)
 
-    try:
-        applied = json.loads(applied_files)
-    except json.JSONDecodeError as e:
-        return json.dumps({"error": f"Invalid applied_files JSON: {e}"}, ensure_ascii=False)
+    if applied_files_path:
+        raw = _read_file(_resolve_path(applied_files_path))
+        if raw is None:
+            return json.dumps({"error": f"applied_files_path not readable: {applied_files_path}"}, ensure_ascii=False)
+        try:
+            applied = json.loads(raw)
+        except json.JSONDecodeError as e:
+            return json.dumps({"error": f"applied_files_path is not valid JSON: {e}"}, ensure_ascii=False)
+        if not isinstance(applied, list):
+            return json.dumps({"error": "applied_files_path must hold a JSON array of apply results"}, ensure_ascii=False)
+    else:
+        try:
+            applied = json.loads(applied_files)
+        except json.JSONDecodeError as e:
+            return json.dumps({"error": f"Invalid applied_files JSON: {e}"}, ensure_ascii=False)
 
     try:
         new = json.loads(new_files)
@@ -1243,6 +1349,13 @@ async def template_finalize_sync(
         deleted = json.loads(deleted_files)
     except json.JSONDecodeError:
         deleted = []
+
+    from . import template_sync_v3 as v3
+    if v3.is_v3(manifest):
+        rules = v3.load_ownership(manifest["templateRepo"])
+        if rules is None:
+            return json.dumps({"error": f"manifest v3 needs {v3.OWNERSHIP_FILE} in the template repo"}, ensure_ascii=False)
+        return json.dumps(v3.finalize_v3(pp, manifest, rules, applied, new, deleted), ensure_ascii=False)
 
     # Validate before touching the manifest (downstream finding 2026-07-19 #6:
     # hand-typed hashes with stray characters silently corrupted a manifest).
@@ -1337,6 +1450,13 @@ async def template_finalize_sync(
     manifest_json = json.dumps(manifest, indent=2, ensure_ascii=False)
     _write_file_atomic(manifest_path, manifest_json)
 
+    consumed = sorted(
+        ({"path": _normalize_path(i["file_path"]),
+          "hash": manifest["files"].get(i["file_path"], {}).get("templateHash")}
+         for i in applied if i.get("file_path") and i.get("manifest_entry")),
+        key=lambda d: d["path"],
+    )
+
     return json.dumps({
         "manifest_path": ".claude/template-manifest.json",
         "last_synced": new_head,
@@ -1344,8 +1464,53 @@ async def template_finalize_sync(
         "files_added": added_count,
         "files_dropped": len(dropped_entries),
         "dropped_entries": sorted(dropped_entries),
+        "consumed_entries": len(consumed),
+        "consumed": consumed,
         "manifest_written": True,
     }, ensure_ascii=False)
+
+
+@mcp.tool()
+async def template_migrate_manifest(
+    project_path: str,
+    backup_dir: str = "",
+    dry_run: bool = False,
+) -> str:
+    """
+    Migrate a v2 template manifest to v3 (three-class ownership). Call it at
+    step 1 of a sync when template_load_manifest reports migration_required.
+
+    Steps (toolkit spec §7): extract the PROJECT-CUSTOM region from CLAUDE.md;
+    diff the remainder against the template CLAUDE.md at the held revision
+    (template_commit, else the template_version tag, never the current
+    template), placeholder-rendered; write .claude/rules/project.md with the
+    region verbatim and the out-of-region hunks fenced as ```diff; rewrite the
+    manifest as v3 (entries classified by templates/ownership.json,
+    project-class entries dropped, unknown top-level keys preserved).
+    Idempotent: an existing project.md is never overwritten and a v3 manifest
+    is skipped. CLAUDE.md itself is not touched here -- the apply step
+    overwrites it in the same sync.
+
+    Args:
+        project_path: Path to the project root directory
+        backup_dir: Receives CLAUDE.md.pre-migration and
+            template-manifest.json.pre-migration. Required unless dry_run.
+        dry_run: Compute and return everything (project_md content, manifest,
+            hunk_count, redundant_project_file, warnings) without writing.
+
+    Returns:
+        JSON with migrated, dry_run, migration_base, hunk_count, project_md,
+        project_md_bytes, project_md_existing, region_was_seed (the region
+        was the toolkit's untouched seed and is omitted), dropped_entries,
+        redundant_project_file (byte-identical copies of files that are now
+        project-owned; suggestion only, never deleted), gate_self_reference
+        (a **Gate**:/**Test**: value pointing at a template-class path --
+        write mode refuses), gate_unverified (a **Gate**: is declared and this
+        tool did not run it), unknown_keys, warnings, backup, written.
+    """
+    from . import template_sync_v3 as v3
+    pp = pathlib.Path(project_path).resolve()
+    return json.dumps(v3.migrate_manifest(pp, backup_dir, dry_run), ensure_ascii=False)
 
 
 @mcp.tool()
