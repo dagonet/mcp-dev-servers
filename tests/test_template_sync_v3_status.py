@@ -342,6 +342,33 @@ def test_compute_status_v3_encoding_drift_and_gate(tmp_path):
     assert res["gate_unverified"] is True
 
 
+def test_diff_kind_insertion_vs_mixed():
+    ins = v3._unified("a\nb\n", "a\nx\nb\ny\n", "template", "project")
+    assert v3.diff_kind(ins) == "insertion"
+    mixed = v3._unified("a\nb\n", "a\nc\n", "template", "project")
+    assert v3.diff_kind(mixed) == "mixed"
+    deletion = v3._unified("a\nb\n", "a\n", "template", "project")
+    assert v3.diff_kind(deletion) == "mixed"
+    assert v3.diff_kind("") == "mixed"
+
+
+def test_compute_status_v3_local_diff_kind(tmp_path):
+    # MM-Agent (batch 10): a project rule that landed outside the region is a
+    # pure insertion -- the skill prints the "move it to project.md" remedy only then.
+    repo, proj = _mk_v3(
+        tmp_path,
+        template={"CLAUDE.md": "# T\nrule 1\n", ".claude/agents/coder.md": "c\n"},
+        project={"CLAUDE.md": "# T\nrule 1\nmy project rule\n", ".claude/agents/coder.md": "c edited\n"},
+        entries={"CLAUDE.md": _tpl_entry("# T\nrule 1\n"), ".claude/agents/coder.md": _tpl_entry("c\n")},
+    )
+    res = _status(proj)
+    f = res["files"]
+    assert f["CLAUDE.md"]["status"] == "LOCAL_EDITED"
+    assert f["CLAUDE.md"]["local_diff_kind"] == "insertion"
+    assert f[".claude/agents/coder.md"]["status"] == "LOCAL_EDITED"
+    assert f[".claude/agents/coder.md"]["local_diff_kind"] == "mixed"
+
+
 def test_compute_status_v3_root_consumer_file_stays_project(tmp_path):
     # panoscribe's escape hatch (review §10c): a root-level consumer file that
     # matches a template-class rule but has no manifest entry is never in

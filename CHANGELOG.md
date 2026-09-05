@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `template-sync-tools`: `template_compute_status` (manifest v3) reports `local_diff_kind` beside `local_diff` for every `LOCAL_EDITED` template-class file — `"insertion"` when the diff carries only added lines, `"mixed"` otherwise — so the sync skill can offer the "move these lines to `.claude/rules/project.md`" remedy only when it applies (MM-Agent, toolkit batch 10).
+
 ## [0.3.0] — 2026-09-05
 
 ### Compatibility

@@ -489,6 +489,21 @@ def _unified(a: str, b: str, fromfile: str, tofile: str) -> str:
     ))
 
 
+def diff_kind(diff: str) -> str:
+    """"insertion" when the unified diff body carries only added lines,
+    else "mixed" (review batch 10: a pure insertion outside the region is
+    the case the skill can send to .claude/rules/project.md)."""
+    added = removed = 0
+    for line in (diff or "").splitlines():
+        if line.startswith(("+++", "---", "@@")):
+            continue
+        if line.startswith("+"):
+            added += 1
+        elif line.startswith("-"):
+            removed += 1
+    return "insertion" if added and not removed else "mixed"
+
+
 def template_status(entry_hash_hex: str, tpl_replaced: str | None,
                     proj_content: str | None) -> tuple[str, str | None]:
     """§7 statuses for a `template` entry. LOCAL_EDITED wins over
@@ -577,6 +592,7 @@ def compute_status_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules) -
             status, local_diff = template_status(parse_hash(entry.get("hash", "")), tpl_replaced, proj_content)
             if local_diff is not None:
                 info["local_diff"] = local_diff
+                info["local_diff_kind"] = diff_kind(local_diff)
             info["template_changed"] = (
                 tpl_replaced is not None and core._sha256(tpl_replaced) != parse_hash(entry.get("hash", ""))
             )
