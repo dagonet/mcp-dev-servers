@@ -820,3 +820,178 @@ def finalize_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules,
         "warnings": warnings,
         "manifest_written": True,
     }
+
+
+# -------------------------
+# v2 -> v3 migration
+# -------------------------
+
+MIGRATION_MARKER = "<!-- template-sync: project-owned; migrated from CLAUDE.md at"
+
+
+def build_project_md(region: str | None, hunks: str, base_label: str, template_version: str) -> str:
+    rendered = "no" if base_label == "unavailable" else "yes"
+    out = [
+        "# Project instructions",
+        f"{MIGRATION_MARKER} {template_version}; migration-base: {base_label}; rendered: {rendered} -->",
+        "",
+    ]
+    region_text = (region or "").strip("\n")
+    if region_text:
+        out += [region_text, ""]
+    if hunks.strip():
+        out += [
+            "## Migrated from CLAUDE.md — review, then keep or delete",
+            "```diff",
+            hunks.rstrip("\n"),
+            "```",
+            "",
+        ]
+    return "\n".join(out)
+
+
+def _region_body(region_block: str | None) -> str | None:
+    """Inner text of a PROJECT-CUSTOM block (markers stripped)."""
+    if region_block is None:
+        return None
+    lines = region_block.splitlines()
+    inner = [l for l in lines if core.CUSTOM_REGION_BEGIN not in l and core.CUSTOM_REGION_END not in l]
+    return "\n".join(inner)
+
+
+def migrate_v2_to_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules) -> dict:
+    warnings = list(rules.warnings)
+    placeholders = manifest.get("placeholders", {})
+    repo = core._template_repo_resolved(manifest)
+
+    # Steps 1-2: region + out-of-region hunks against the held, rendered base.
+    proj_claude = core._read_file(pp / "CLAUDE.md") or ""
+    proj_part, proj_region = core._split_custom_region(proj_claude)
+    base, base_label, warn = resolve_base(manifest, "CLAUDE.md")
+    if warn:
+        warnings.append(warn)
+    hunks = ""
+    hunk_count = 0
+    region_body = _region_body(proj_region)
+    region_was_seed = None
+    if base is not None:
+        base_part, base_region = core._split_custom_region(base)
+        hunks = _unified(base_part, proj_part, f"CLAUDE.md@{base_label}", "CLAUDE.md@project")
+        hunk_count = sum(1 for l in hunks.splitlines() if l.startswith("@@"))
+        # The toolkit's own seed is not the consumer's content (review §9b).
+        if region_body is not None and base_region is not None:
+            region_was_seed = _norm_ws(region_body) == _norm_ws(_region_body(base_region) or "")
+            if region_was_seed:
+                region_body = None
+    gate_hits, gate_declared = collect_gate_refs(pp, rules)
+
+    # Step 4: the v3 manifest.
+    files: dict[str, dict] = {}
+    dropped: list[str] = []
+    redundant: list[str] = []
+    for proj_rel, entry in manifest.get("files", {}).items():
+        proj_rel = core._normalize_path(proj_rel)
+        tpl_rel = rules.template_path_for(proj_rel)
+        cls = rules.class_of(tpl_rel)
+        if cls == "template":
+            hex_digest = parse_hash(entry.get("templateHash", ""))
+            if hex_digest:
+                files[proj_rel] = {"hash": format_hash(hex_digest), "ownership": "template"}
+            else:
+                tpl_raw = core._read_file(core._template_file_path(manifest, tpl_rel))
+                files[proj_rel] = {"hash": format_hash(core._sha256(core._apply_placeholders(tpl_raw or "", placeholders))),
+                                   "ownership": "template"}
+                warnings.append(f"{proj_rel}: no templateHash in v2 entry -- baseline set to the current template")
+        elif cls == "once":
+            files[proj_rel] = {"ownership": "once"}
+        else:
+            dropped.append(proj_rel)
+            on_disk = core._read_file(pp / proj_rel)
+            if on_disk is not None:
+                held, _label, _w = resolve_base(manifest, tpl_rel)
+                if held is not None and held == on_disk:
+                    redundant.append(proj_rel)
+
+    commit = manifest_commit(manifest)
+    version, vwarn = derive_template_version(repo, commit, rules.tracked_paths) if commit else (None, "untagged_template_tree")
+    if vwarn:
+        warnings.append(vwarn)
+    new_manifest = {k: v for k, v in manifest.items() if k not in ("version", "lastSynced", "files")}
+    new_manifest["manifest_version"] = MANIFEST_VERSION_V3
+    new_manifest["template_version"] = version
+    new_manifest["template_commit"] = commit
+    new_manifest["requires_server"] = f">={MIN_SERVER_FOR_V3}"
+    new_manifest["files"] = dict(sorted(files.items()))
+
+    # Step 3: project.md, unless the consumer already has one.
+    existing = core._read_file(pp / PROJECT_MD)
+    project_md = None
+    if existing is None:
+        project_md = build_project_md(region_body, hunks, base_label, "v3.1.0")
+
+    return {
+        "manifest": new_manifest,
+        "dropped_entries": sorted(dropped),
+        "redundant_project_file": sorted(redundant),
+        "project_md": project_md,
+        "project_md_existing": existing is not None,
+        "hunk_count": hunk_count,
+        "migration_base": base_label,
+        "region_was_seed": region_was_seed,
+        "gate_self_reference": gate_hits,
+        "gate_unverified": gate_declared,
+        "unknown_keys": unknown_top_level_keys(new_manifest),
+        "warnings": warnings,
+    }
+
+
+def migrate_manifest(pp: pathlib.Path, backup_dir: str, dry_run: bool) -> dict:
+    manifest, errors = core._load_manifest(pp)
+    if manifest is None:
+        return {"error": errors[0]}
+    if errors:
+        return {"error": "; ".join(errors)}
+    if is_v3(manifest):
+        return {"migrated": False, "dry_run": dry_run, "reason": "manifest is already v3 -- nothing to migrate"}
+    rules = load_ownership(manifest["templateRepo"])
+    if rules is None:
+        return {"error": f"cannot migrate: {OWNERSHIP_FILE} not found in the template repo -- "
+                         "the toolkit checkout predates v3.1"}
+    plan = migrate_v2_to_v3(pp, manifest, rules)
+    plan["dry_run"] = dry_run
+    plan["project_md_bytes"] = len((plan["project_md"] or "").encode("utf-8"))
+    if dry_run:
+        plan["migrated"] = False
+        plan["backup"] = None
+        plan["written"] = []
+        return plan
+    if plan["gate_self_reference"]:
+        hit = plan["gate_self_reference"][0]
+        return {"error": f"gate_self_reference: **{hit['key']}**: points at template-class {hit['path']}; "
+                         "move the logic to a non-template path (e.g. scripts/gate.sh) and point the key "
+                         "there, then migrate", "gate_self_reference": plan["gate_self_reference"]}
+    if not backup_dir:
+        return {"error": "backup_dir is required to migrate (pre-migration CLAUDE.md and manifest are copied there); "
+                         "use dry_run=true to preview"}
+
+    bdir = pathlib.Path(backup_dir).resolve()
+    bdir.mkdir(parents=True, exist_ok=True)
+    claude_bak = bdir / "CLAUDE.md.pre-migration"
+    manifest_bak = bdir / "template-manifest.json.pre-migration"
+    core._write_file_atomic(claude_bak, core._read_file(pp / "CLAUDE.md") or "")
+    core._write_file_atomic(manifest_bak, core._read_file(pp / ".claude" / "template-manifest.json") or "")
+
+    written = []
+    if plan["project_md"] is not None:
+        target = pp / PROJECT_MD
+        target.parent.mkdir(parents=True, exist_ok=True)
+        core._write_file_atomic(target, plan["project_md"])
+        written.append(PROJECT_MD)
+    core._write_file_atomic(pp / ".claude" / "template-manifest.json",
+                            json.dumps(plan["manifest"], indent=2, ensure_ascii=False))
+    written.append(".claude/template-manifest.json")
+
+    plan["migrated"] = True
+    plan["backup"] = {"claude_md": str(claude_bak), "manifest": str(manifest_bak)}
+    plan["written"] = written
+    return plan

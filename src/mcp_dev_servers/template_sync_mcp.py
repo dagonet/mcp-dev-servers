@@ -1444,6 +1444,49 @@ async def template_finalize_sync(
 
 
 @mcp.tool()
+async def template_migrate_manifest(
+    project_path: str,
+    backup_dir: str = "",
+    dry_run: bool = False,
+) -> str:
+    """
+    Migrate a v2 template manifest to v3 (three-class ownership). Call it at
+    step 1 of a sync when template_load_manifest reports migration_required.
+
+    Steps (toolkit spec §7): extract the PROJECT-CUSTOM region from CLAUDE.md;
+    diff the remainder against the template CLAUDE.md at the held revision
+    (template_commit, else the template_version tag, never the current
+    template), placeholder-rendered; write .claude/rules/project.md with the
+    region verbatim and the out-of-region hunks fenced as ```diff; rewrite the
+    manifest as v3 (entries classified by templates/ownership.json,
+    project-class entries dropped, unknown top-level keys preserved).
+    Idempotent: an existing project.md is never overwritten and a v3 manifest
+    is skipped. CLAUDE.md itself is not touched here -- the apply step
+    overwrites it in the same sync.
+
+    Args:
+        project_path: Path to the project root directory
+        backup_dir: Receives CLAUDE.md.pre-migration and
+            template-manifest.json.pre-migration. Required unless dry_run.
+        dry_run: Compute and return everything (project_md content, manifest,
+            hunk_count, redundant_project_file, warnings) without writing.
+
+    Returns:
+        JSON with migrated, dry_run, migration_base, hunk_count, project_md,
+        project_md_bytes, project_md_existing, region_was_seed (the region
+        was the toolkit's untouched seed and is omitted), dropped_entries,
+        redundant_project_file (byte-identical copies of files that are now
+        project-owned; suggestion only, never deleted), gate_self_reference
+        (a **Gate**:/**Test**: value pointing at a template-class path --
+        write mode refuses), gate_unverified (a **Gate**: is declared and this
+        tool did not run it), unknown_keys, warnings, backup, written.
+    """
+    from . import template_sync_v3 as v3
+    pp = pathlib.Path(project_path).resolve()
+    return json.dumps(v3.migrate_manifest(pp, backup_dir, dry_run), ensure_ascii=False)
+
+
+@mcp.tool()
 async def template_reverse_placeholders(
     project_path: str,
     file_path: str,

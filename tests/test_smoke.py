@@ -10,7 +10,7 @@ SERVERS = [
     ("mcp_dev_servers.dotnet_mcp", 19),
     ("mcp_dev_servers.ollama_mcp", 6),
     ("mcp_dev_servers.rust_mcp", 4),
-    ("mcp_dev_servers.template_sync_mcp", 8),
+    ("mcp_dev_servers.template_sync_mcp", 9),
     ("mcp_dev_servers.python_tools_mcp", 7),
 ]
 
