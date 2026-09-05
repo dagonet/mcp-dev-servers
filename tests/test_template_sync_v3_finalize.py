@@ -172,6 +172,59 @@ def test_finalize_v3_drop_sweep_and_explicit_deletes(tmp_path):
     assert out["template_version"] is None
 
 
+def test_finalize_reads_applied_files_from_path_and_echoes_consumed(tmp_path):
+    # panoscribe (batch 9): tool results reach finalize through a file the skill
+    # writes, never through retyping; the response echoes what was consumed.
+    repo, proj = _mk_v3(tmp_path, template={"CLAUDE.md": "v1\n", ".claude/rules/project.md": "p\n"},
+                        project={"CLAUDE.md": "v1\n", ".claude/rules/project.md": "p\n"}, entries={})
+    applied = [
+        {"file_path": "CLAUDE.md", "manifest_entry": {"hash": ts._sha256("v1\n"), "ownership": "template"}},
+        {"file_path": ".claude/rules/project.md", "manifest_entry": {"ownership": "once"}},
+    ]
+    path = tmp_path / "applied.json"
+    path.write_text(json.dumps(applied), encoding="utf-8")
+    res = _run(ts.template_finalize_sync(str(proj), "[]", applied_files_path=str(path)))
+    assert res["manifest_written"] is True
+    assert res["consumed_entries"] == 2
+    assert res["consumed"] == [
+        {"path": ".claude/rules/project.md", "hash": None},
+        {"path": "CLAUDE.md", "hash": "sha256:" + ts._sha256("v1\n")},
+    ]
+    out = json.loads((proj / ".claude" / "template-manifest.json").read_text(encoding="utf-8"))
+    assert set(out["files"]) == {"CLAUDE.md", ".claude/rules/project.md"}
+
+
+def test_finalize_applied_files_path_errors_leave_manifest_untouched(tmp_path):
+    repo, proj = _mk_v3(tmp_path, template={"CLAUDE.md": "v1\n"}, project={"CLAUDE.md": "v1\n"}, entries={})
+    before = (proj / ".claude" / "template-manifest.json").read_text(encoding="utf-8")
+    res = _run(ts.template_finalize_sync(str(proj), "[]", applied_files_path=str(tmp_path / "missing.json")))
+    assert "applied_files_path" in res["error"]
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"not": "an array"}), encoding="utf-8")
+    res2 = _run(ts.template_finalize_sync(str(proj), "[]", applied_files_path=str(bad)))
+    assert "applied_files_path" in res2["error"]
+    assert (proj / ".claude" / "template-manifest.json").read_text(encoding="utf-8") == before
+
+
+def test_finalize_v2_path_echoes_consumed_template_hash(tmp_path):
+    repo = tmp_path / "toolkit"
+    (repo / "templates" / "general").mkdir(parents=True)
+    (repo / "templates" / "general" / "CLAUDE.md").write_text("v1\n", encoding="utf-8", newline="")
+    proj = tmp_path / "proj"
+    (proj / ".claude").mkdir(parents=True)
+    (proj / "CLAUDE.md").write_text("v1\n", encoding="utf-8", newline="")
+    (proj / ".claude" / "template-manifest.json").write_text(json.dumps({
+        "version": 2, "templateRepo": str(repo), "variant": "general", "placeholders": {},
+        "lastSynced": "", "files": {},
+    }), encoding="utf-8")
+    h = ts._sha256("v1\n")
+    applied = json.dumps([{"file_path": "CLAUDE.md", "manifest_entry": {
+        "templateHash": h, "templateRawHash": h, "localHash": h, "locallyModified": False}}])
+    res = _run(ts.template_finalize_sync(str(proj), applied))
+    assert res["consumed_entries"] == 1
+    assert res["consumed"] == [{"path": "CLAUDE.md", "hash": h}]
+
+
 def test_finalize_v3_preserves_per_file_unknown_keys(tmp_path):
     # open-brain (batch 8): a hand-added per-file annotation must survive an
     # applied entry that does not carry it, and be reported (review §12).

@@ -1280,9 +1280,10 @@ async def template_apply_file(
 @mcp.tool()
 async def template_finalize_sync(
     project_path: str,
-    applied_files: str,
+    applied_files: str = "[]",
     new_files: str = "[]",
     deleted_files: str = "[]",
+    applied_files_path: str = "",
 ) -> str:
     """
     Finalize a sync operation by writing the updated manifest.
@@ -1303,9 +1304,15 @@ async def template_finalize_sync(
         deleted_files: JSON array of relative paths the project deliberately
             removed; their entries are dropped even if the template still
             ships the file (optional)
+        applied_files_path: Path to a local JSON file holding the same array
+            as applied_files, written by the caller from the tool results so
+            nothing is retyped. When given, applied_files is ignored.
 
     Returns:
-        JSON confirmation with counts and the dropped entries
+        JSON confirmation with counts, the dropped entries, and what was
+        consumed: `consumed_entries` and `consumed` = [{path, hash}] with the
+        hash exactly as stored (sha256:-prefixed under v3, templateHash under
+        v2) for the caller's post-finalize self-check.
 
     Manifest v3: entries carry `hash` (sha256:-prefixed) and `ownership`;
     `template_commit` is HEAD of the template repo and `template_version` the
@@ -1317,10 +1324,21 @@ async def template_finalize_sync(
     if manifest is None:
         return json.dumps({"error": errors[0]}, ensure_ascii=False)
 
-    try:
-        applied = json.loads(applied_files)
-    except json.JSONDecodeError as e:
-        return json.dumps({"error": f"Invalid applied_files JSON: {e}"}, ensure_ascii=False)
+    if applied_files_path:
+        raw = _read_file(_resolve_path(applied_files_path))
+        if raw is None:
+            return json.dumps({"error": f"applied_files_path not readable: {applied_files_path}"}, ensure_ascii=False)
+        try:
+            applied = json.loads(raw)
+        except json.JSONDecodeError as e:
+            return json.dumps({"error": f"applied_files_path is not valid JSON: {e}"}, ensure_ascii=False)
+        if not isinstance(applied, list):
+            return json.dumps({"error": "applied_files_path must hold a JSON array of apply results"}, ensure_ascii=False)
+    else:
+        try:
+            applied = json.loads(applied_files)
+        except json.JSONDecodeError as e:
+            return json.dumps({"error": f"Invalid applied_files JSON: {e}"}, ensure_ascii=False)
 
     try:
         new = json.loads(new_files)
@@ -1432,6 +1450,13 @@ async def template_finalize_sync(
     manifest_json = json.dumps(manifest, indent=2, ensure_ascii=False)
     _write_file_atomic(manifest_path, manifest_json)
 
+    consumed = sorted(
+        ({"path": _normalize_path(i["file_path"]),
+          "hash": manifest["files"].get(i["file_path"], {}).get("templateHash")}
+         for i in applied if i.get("file_path") and i.get("manifest_entry")),
+        key=lambda d: d["path"],
+    )
+
     return json.dumps({
         "manifest_path": ".claude/template-manifest.json",
         "last_synced": new_head,
@@ -1439,6 +1464,8 @@ async def template_finalize_sync(
         "files_added": added_count,
         "files_dropped": len(dropped_entries),
         "dropped_entries": sorted(dropped_entries),
+        "consumed_entries": len(consumed),
+        "consumed": consumed,
         "manifest_written": True,
     }, ensure_ascii=False)
 

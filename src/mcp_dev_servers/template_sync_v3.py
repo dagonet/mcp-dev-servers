@@ -781,6 +781,11 @@ def finalize_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules,
         if carried:
             unknown_files.append({"path": fp, "keys": carried})
         updated += 1
+    consumed = sorted(
+        ({"path": core._normalize_path(i["file_path"]),
+          "hash": files[core._normalize_path(i["file_path"])].get("hash")} for i in applied),
+        key=lambda d: d["path"],
+    )
 
     added = 0
     for fp in new:
@@ -846,6 +851,8 @@ def finalize_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules,
         "dropped_entries": sorted(dropped),
         "unknown_keys": unknown,
         "unknown_file_keys": sorted(unknown_files, key=lambda d: d["path"]),
+        "consumed_entries": len(consumed),
+        "consumed": consumed,
         "warnings": warnings,
         "manifest_written": True,
     }
