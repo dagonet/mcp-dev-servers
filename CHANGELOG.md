@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] — 2026-09-09
+
+### Compatibility
+
+- **Additive for readers; one write-side change worth knowing.** A manifest this server writes — by `template_migrate_manifest`, or by `template_finalize_sync` when it finds a floor below the splice floor — now declares `requires_server: ">=0.3.2"`. After a sync under 0.3.3, that manifest will *refuse to load* on 0.3.0 or 0.3.1, which is the intent: those versions accept a v3 manifest but drop the consumer's PROJECT-CUSTOM region. The raise is monotonic, so a stricter floor a consumer pinned themselves is never loosened, and a floor this server cannot parse is left as found and warned about.
+- **Gate on `capabilities`, not on the version.** `template_load_manifest` now reports the capability names a caller can branch on. A version is a proxy for a capability, and 0.3.1 is what happens when the proxy disagrees with the thing it stands for — newer than 0.3.0 and equally unable to splice a region.
+- Restart the MCP server to pick this up; the per-session observable is `server_version` in the `template_load_manifest` response, never `pip show`, the `dist-info`, or the tag. `server_source` now says which checkout is live, which is the answer for an editable install whose metadata is stale.
+
 ### Added
 
 - `template-sync-tools`: **`capabilities`** on every `template_load_manifest` response, including when validation fails — a flat array of names a caller can gate on: `region_splice`, `region_orphaned`, `region_markers_malformed`, `local_diff_kind`, `server_source`. **Presence is the contract**, never a boolean whose default someone misreads, and names are permanent: appended to, never renamed or removed. Gate on `"region_splice" in capabilities` rather than on version arithmetic — a version is a proxy for a capability, and this round is what happens when the proxy disagrees with the thing it stands for: 0.3.1 was newer than 0.3.0 and equally unable to splice a region. The list is deliberately short, carrying names a caller would branch on rather than an inventory of every field emitted; each is paired with a witness test that exercises the behaviour it claims, and the set is asserted exactly, so it cannot grow into claims nobody checked.
