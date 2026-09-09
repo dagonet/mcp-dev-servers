@@ -177,7 +177,7 @@ def test_migration_region_and_hunks(tmp_path):
     assert m["manifest_version"] == 3
     assert m["template_commit"] == commit
     assert m["template_version"] == "v2.3.0"
-    assert m["requires_server"] == ">=0.3.0"
+    assert m["requires_server"] == ">=0.3.2"   # the splice floor, not the v3 floor
     assert m["deletedAcknowledged"] == ["old.md"]
     assert res["unknown_keys"] == ["deletedAcknowledged"]
     assert "version" not in m and "lastSynced" not in m
@@ -188,6 +188,23 @@ def test_migration_region_and_hunks(tmp_path):
     assert res["redundant_project_file"] == ["CLAUDE.local.md"]
     assert (proj / "CLAUDE.local.md").exists()                # never deleted
     assert (proj / "CLAUDE.md").read_text(encoding="utf-8") == PROJ_CLAUDE   # apply step does that, not migrate
+
+
+def test_migration_stamps_the_splice_floor_not_the_v3_floor(tmp_path):
+    """0.3.0 and 0.3.1 accept a v3 manifest but lack the region splice, so a
+    manifest written by this server must refuse to load on them. This is the
+    one place requires_server can protect that hazard: not the first
+    migration, which no server-side code can reach, but every sync afterwards
+    — a downgrade, or the same repo opened where an older process is running.
+    """
+    repo, proj, commit = _mk_v2(tmp_path, PROJ_CLAUDE)
+    res = _migrate(proj, backup_dir=str(tmp_path / "b"))
+    assert res["manifest"]["requires_server"] == ">=0.3.2"
+    out = json.loads((proj / ".claude" / "template-manifest.json").read_text(encoding="utf-8"))
+    assert out["requires_server"] == ">=0.3.2"
+    # And that floor is enforced: a 0.3.1-era server would be refused by name.
+    ok, reason = v3.requires_server_satisfied(out["requires_server"], "0.3.1")
+    assert ok is False and "0.3.1" in reason
 
 
 def test_migration_vacuity_control(tmp_path):

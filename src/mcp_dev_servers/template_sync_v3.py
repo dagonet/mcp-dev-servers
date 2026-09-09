@@ -17,7 +17,14 @@ import re
 
 from . import template_sync_mcp as core
 
-MIN_SERVER_FOR_V3 = "0.3.0"
+# The floor this server stamps into a manifest it writes. It is the SPLICE
+# floor, not the "understands v3" floor: 0.3.0 and 0.3.1 accept a v3 manifest
+# but lack the PROJECT-CUSTOM region splice, so a sync under them drops the
+# consumer's region from the working file. requires_server cannot protect the
+# first migration -- no code shipping later reaches a process running 0.3.1 --
+# but it does protect every sync afterwards, including a downgrade or the same
+# repo opened where an older process is live.
+MIN_SERVER_FOR_V3 = "0.3.2"
 MANIFEST_VERSION_V3 = 3
 OWNERSHIP_FILE = "templates/ownership.json"
 PROJECT_MD = ".claude/rules/project.md"

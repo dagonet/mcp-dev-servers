@@ -147,6 +147,18 @@ def test_finalize_v3_writes_prefixed_hashes_and_reports_unknown_keys(tmp_path):
     assert out["files"]["hooks/new.sh"] == {"hash": "sha256:" + ts._sha256("n\n"), "ownership": "template"}
 
 
+def test_finalize_fallback_floor_is_the_splice_floor(tmp_path):
+    """A v3 manifest that somehow carries no requires_server gets the splice
+    floor written into it, not the older v3 floor."""
+    repo, proj = _mk_v3(tmp_path, template={"CLAUDE.md": "v1\n"}, project={"CLAUDE.md": "v1\n"}, entries={})
+    m = json.loads((proj / ".claude" / "template-manifest.json").read_text(encoding="utf-8"))
+    del m["requires_server"]
+    (proj / ".claude" / "template-manifest.json").write_text(json.dumps(m), encoding="utf-8")
+    _run(ts.template_finalize_sync(str(proj), "[]"))
+    out = json.loads((proj / ".claude" / "template-manifest.json").read_text(encoding="utf-8"))
+    assert out["requires_server"] == ">=0.3.2"
+
+
 def test_finalize_v3_rejects_bad_hash_and_ownership(tmp_path):
     repo, proj = _mk_v3(tmp_path, template={"CLAUDE.md": "v1\n"}, project={"CLAUDE.md": "v1\n"}, entries={})
     applied = json.dumps([

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `template-sync-tools`: **a manifest this server writes now declares `requires_server: ">=0.3.2"`**, the *splice* floor rather than the "understands v3" floor. 0.3.0 and 0.3.1 accept a v3 manifest but lack the PROJECT-CUSTOM region splice, so a sync under them drops the consumer's region from the working file. This cannot protect the first migration — no code shipping later reaches a process already running 0.3.1, which is why the toolkit's skill checks `server_version` before migrating — but it does protect every sync afterwards, including a downgrade or the same repository opened where an older process is live. Applies to manifests written by `template_migrate_manifest`, and to `template_finalize_sync` when a manifest carries no floor at all; an existing floor is preserved rather than rewritten.
+
 ### Added
 
 - `template-sync-tools`: **`server_source`** on every `template_load_manifest` response, beside `server_version` and present even when validation fails — the directory of the package this process actually imported. An editable install's `dist-info` is stamped once at install and never re-stamped, so `pip show` can report a version three releases behind the running code (measured: `pip show` saying 0.3.0 while the load response said 0.3.2). `server_version` already reads from the imported source; `server_source` says *which* checkout that source is, so an editable install is diagnosable rather than inferred. **The value is a local filesystem path** — expect it in pasted responses and bug reports.
