@@ -26,6 +26,29 @@ from . import template_sync_mcp as core
 # repo opened where an older process is live.
 MIN_SERVER_FOR_V3 = "0.3.2"
 MANIFEST_VERSION_V3 = 3
+
+# Capabilities a caller may gate on, reported by template_load_manifest.
+#
+# A version is a proxy for a capability, and every proxy eventually disagrees
+# with the thing it stands for: 0.3.1 was newer than 0.3.0 and equally unable
+# to splice a region, so a skill keying on the version number learned nothing
+# about the hazard. Gate on `"region_splice" in capabilities` instead.
+#
+# PRESENCE is the contract -- a name is here or it is not, never a boolean
+# whose default someone misreads. Names are PERMANENT: appended to, never
+# renamed or removed, even if the implementation behind one changes, or the
+# map becomes another drifting proxy. Every name is paired with a witness in
+# tests/test_template_sync_capabilities.py that exercises the behaviour it
+# claims, and the set is asserted exactly, so the list cannot grow into
+# claims nobody checked. Deliberately short: names a caller would branch on,
+# not an inventory of every field emitted.
+CAPABILITIES = (
+    "region_splice",
+    "region_orphaned",
+    "region_markers_malformed",
+    "local_diff_kind",
+    "server_source",
+)
 OWNERSHIP_FILE = "templates/ownership.json"
 PROJECT_MD = ".claude/rules/project.md"
 CLASSES = ("template", "once", "project")

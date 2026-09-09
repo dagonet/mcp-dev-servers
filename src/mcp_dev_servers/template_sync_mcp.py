@@ -692,12 +692,16 @@ async def template_load_manifest(project_path: str) -> str:
     pp = pathlib.Path(project_path).resolve()
     manifest, errors = _load_manifest(pp)
     if manifest is None:
+        from . import template_sync_v3 as _v3
         return json.dumps({"valid": False, "errors": errors, "server_version": __version__,
-                           "server_source": _server_source()}, ensure_ascii=False)
+                           "server_source": _server_source(),
+                           "capabilities": list(_v3.CAPABILITIES)}, ensure_ascii=False)
 
     if errors:
+        from . import template_sync_v3 as _v3
         return json.dumps({"valid": False, "errors": errors, "server_version": __version__,
-                           "server_source": _server_source()}, ensure_ascii=False)
+                           "server_source": _server_source(),
+                           "capabilities": list(_v3.CAPABILITIES)}, ensure_ascii=False)
 
     from . import template_sync_v3 as v3
 
@@ -726,6 +730,7 @@ async def template_load_manifest(project_path: str) -> str:
             "manifest_version": 3,
             "server_version": __version__,
             "server_source": _server_source(),
+            "capabilities": list(v3.CAPABILITIES),
             "migration_required": False,
             "variant": manifest.get("variant", ""),
             "templateRepo": manifest.get("templateRepo", ""),
@@ -776,6 +781,7 @@ async def template_load_manifest(project_path: str) -> str:
         "manifest_version": manifest.get("version", 1),
         "server_version": __version__,
         "server_source": _server_source(),
+        "capabilities": list(v3.CAPABILITIES),
         "migration_required": migration_required,
         "variant": manifest.get("variant", ""),
         "templateRepo": manifest.get("templateRepo", ""),
