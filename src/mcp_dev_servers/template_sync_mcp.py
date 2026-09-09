@@ -42,6 +42,18 @@ KNOWN_VARIANTS = ["general", "dotnet", "dotnet-maui", "rust-tauri", "java", "pyt
 # Helpers
 # -------------------------
 
+def _server_source() -> str:
+    """Directory of the package this process actually imported.
+
+    An editable install's dist-info is stamped once and never re-stamped, so
+    `pip show` can report a version three releases behind the code that is
+    running. `server_version` already reads from the imported source; this
+    says WHICH checkout that source is, so an editable install can be
+    diagnosed rather than inferred. It is a local filesystem path.
+    """
+    return str(pathlib.Path(__file__).parent)
+
+
 def _sha256(content: str) -> str:
     """SHA-256 hash of a string (UTF-8, BOM stripped)."""
     if content.startswith("\ufeff"):
@@ -680,10 +692,12 @@ async def template_load_manifest(project_path: str) -> str:
     pp = pathlib.Path(project_path).resolve()
     manifest, errors = _load_manifest(pp)
     if manifest is None:
-        return json.dumps({"valid": False, "errors": errors, "server_version": __version__}, ensure_ascii=False)
+        return json.dumps({"valid": False, "errors": errors, "server_version": __version__,
+                           "server_source": _server_source()}, ensure_ascii=False)
 
     if errors:
-        return json.dumps({"valid": False, "errors": errors, "server_version": __version__}, ensure_ascii=False)
+        return json.dumps({"valid": False, "errors": errors, "server_version": __version__,
+                           "server_source": _server_source()}, ensure_ascii=False)
 
     from . import template_sync_v3 as v3
 
@@ -711,6 +725,7 @@ async def template_load_manifest(project_path: str) -> str:
             "valid": len(errors) == 0,
             "manifest_version": 3,
             "server_version": __version__,
+            "server_source": _server_source(),
             "migration_required": False,
             "variant": manifest.get("variant", ""),
             "templateRepo": manifest.get("templateRepo", ""),
@@ -760,6 +775,7 @@ async def template_load_manifest(project_path: str) -> str:
         "version": manifest.get("version", 1),
         "manifest_version": manifest.get("version", 1),
         "server_version": __version__,
+        "server_source": _server_source(),
         "migration_required": migration_required,
         "variant": manifest.get("variant", ""),
         "templateRepo": manifest.get("templateRepo", ""),

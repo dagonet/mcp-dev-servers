@@ -45,6 +45,36 @@ def test_requires_server_satisfied(spec, server, ok):
         assert reason
 
 
+def test_server_source_reports_the_imported_package_directory(tmp_path):
+    """An editable install's dist-info is stamped at install time and never
+    re-stamped, so `pip show` can say 0.3.0 while the process runs 0.3.2 --
+    measured on this machine during the v3.1 round. server_version already
+    reads from the imported source; server_source says WHICH checkout that is,
+    so the ambiguity is closed rather than inferred."""
+    import pathlib
+
+    import mcp_dev_servers
+
+    expected = str(pathlib.Path(mcp_dev_servers.__file__).parent)
+    # Present even when there is no manifest at all: a caller diagnosing which
+    # build is live must not need a valid project to ask.
+    res = _load(tmp_path / "nonexistent")
+    assert res["valid"] is False
+    assert res["server_source"] == expected
+    assert (pathlib.Path(res["server_source"]) / "__init__.py").is_file()
+
+
+def test_server_source_present_on_a_valid_v3_load(tmp_path):
+    import pathlib
+
+    import mcp_dev_servers
+
+    proj = _write_project(tmp_path, V3, {"rules": []})
+    res = _load(proj)
+    assert res["valid"] is True
+    assert res["server_source"] == str(pathlib.Path(mcp_dev_servers.__file__).parent)
+
+
 def test_unknown_top_level_keys():
     m = {"manifest_version": 3, "files": {}, "deletedAcknowledged": [], "variant": "general"}
     assert v3.unknown_top_level_keys(m) == ["deletedAcknowledged"]
