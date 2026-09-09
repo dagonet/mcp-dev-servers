@@ -190,6 +190,48 @@ def test_migration_region_and_hunks(tmp_path):
     assert (proj / "CLAUDE.md").read_text(encoding="utf-8") == PROJ_CLAUDE   # apply step does that, not migrate
 
 
+def test_migration_reports_the_keep_mine_entries_it_drops(tmp_path):
+    """v3 has no keep-mine class, so `resolution` is dropped by design -- but
+    dropping it silently is the defect. The manifest afterwards records the
+    TEMPLATE's hash for a file that still holds the consumer's deviation, so
+    the next status reports drift and the next apply overwrites it, while the
+    consumer reads a successful migration and learns nothing.
+
+    Measured by penumbra on a real tree: migration is careful with keys it
+    does NOT understand (`reason` survives under unknown_file_keys,
+    `lastSyncedVersion` under unknown_keys) and discarded the one it does.
+    """
+    entries = {
+        "hooks/enforce-delegation.sh": {
+            "templateHash": ts._sha256("tpl\n"), "localHash": ts._sha256("mine\n"),
+            "locallyModified": True, "resolution": "keep-mine",
+        },
+        "hooks/plain.sh": {"templateHash": ts._sha256("p\n"), "localHash": ts._sha256("p\n"),
+                           "locallyModified": False},
+    }
+    repo, proj, commit = _mk_v2(tmp_path, PROJ_CLAUDE, extra_entries=entries,
+                                extra_project={"hooks/enforce-delegation.sh": "mine\n",
+                                               "hooks/plain.sh": "p\n"})
+    res = _migrate(proj, backup_dir=str(tmp_path / "b"))
+
+    assert res["dropped_resolutions"] == [
+        {"path": "hooks/enforce-delegation.sh", "resolution": "keep-mine"}
+    ]
+    # The behaviour itself is the agreed one and is unchanged: the entry
+    # becomes template class, so the deviation is no longer protected.
+    out = json.loads((proj / ".claude" / "template-manifest.json").read_text(encoding="utf-8"))
+    assert out["files"]["hooks/enforce-delegation.sh"]["ownership"] == "template"
+    assert "resolution" not in out["files"]["hooks/enforce-delegation.sh"]
+    # The file on disk is untouched by migration -- only the record changed.
+    assert (proj / "hooks" / "enforce-delegation.sh").read_text(encoding="utf-8") == "mine\n"
+
+
+def test_migration_reports_no_dropped_resolutions_when_there_are_none(tmp_path):
+    repo, proj, commit = _mk_v2(tmp_path, PROJ_CLAUDE)
+    res = _migrate(proj, dry_run=True)
+    assert res["dropped_resolutions"] == []
+
+
 def test_migration_stamps_the_splice_floor_not_the_v3_floor(tmp_path):
     """0.3.0 and 0.3.1 accept a v3 manifest but lack the region splice, so a
     manifest written by this server must refuse to load on them. This is the

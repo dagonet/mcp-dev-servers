@@ -1525,7 +1525,11 @@ async def template_migrate_manifest(
         project_md_bytes, project_md_existing, region_was_seed (the region
         was the toolkit's untouched seed and is omitted), dropped_entries,
         redundant_project_file (byte-identical copies of files that are now
-        project-owned; suggestion only, never deleted), gate_self_reference
+        project-owned; suggestion only, never deleted), dropped_resolutions
+        (entries whose v2 "keep-mine" record is discarded -- v3 has no
+        keep-mine class, so those files become template-owned and the next
+        sync overwrites the deviation unless the consumer re-applies it or
+        the template absorbs it), gate_self_reference
         (a **Gate**:/**Test**: value pointing at a template-class path --
         write mode refuses), gate_unverified (a **Gate**: is declared and this
         tool did not run it), unknown_keys, warnings, backup, written.

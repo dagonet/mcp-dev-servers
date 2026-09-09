@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `template-sync-tools`: **`template_migrate_manifest` reports `dropped_resolutions`** — the entries whose v2 `"resolution": "keep-mine"` record it discards, as `[{path, resolution}]`. **Keep-mine does not survive v3**: the class does not exist there, so such a file becomes `template`-owned and its manifest entry records the *template's* hash while the file on disk still holds the consumer's deviation. The next status therefore reports drift and the next apply overwrites it — behaviour agreed when v3 was designed, but until now the migration performed it silently, so a consumer read a successful migration and learned nothing. The contrast is what made it a defect rather than a limitation: migration already preserves and reports keys it does *not* understand (`unknown_keys`, `unknown_file_keys`) while discarding the one it does. Measured by penumbra rehearsing a real migration on a throwaway clone. A consumer who is told can re-apply the deviation or upstream it; one who is not discovers it when a file changes under them.
+
 ## [0.3.3] — 2026-09-09
 
 ### Compatibility
