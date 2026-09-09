@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] — 2026-09-09
+
+### Compatibility
+
+- **Consumers on `claude-code-toolkit` v3.1.0 should upgrade before migrating a project to a v3 manifest.** 0.3.0 and 0.3.1 destroy a consumer's PROJECT-CUSTOM region on the first v3 apply of `CLAUDE.md` (recoverable from `backup_dir`, but gone from the working file). The toolkit's interim guidance was "do not migrate a project to a v3 manifest"; this release is what lifts it. The floor stays `requires_server: ">=0.3.0"` — this is additive and no manifest field changed. Restart the MCP server to pick it up: a running process keeps the build it imported at spawn.
+- Independently verified before release by a consumer harness that had nothing to do with writing the fix: 24 runs against real cloned repositories, the library called in-process, every assertion on the working file, with a confirmed red on the pre-fix build.
+
 ### Fixed
 
 - `template-sync-tools`: **manifest v3 no longer destroys the PROJECT-CUSTOM region.** Applying a `template`-class file under v3 wrote the template wholesale, wiping the consumer's region — a data-loss regression against v2, which splices it. It mattered because `claude-code-toolkit` v3.1.0 ships `CLAUDE.md` as `template` class *and* keeps the markers in it, with marker text promising "sync-template preserves everything between these markers": a promise printed in the artifact that the mechanism did not keep. The v3 apply path now splices the project's region into the template exactly as v2 does (`region_preserved` in the result), and a region-only difference no longer reads as `LOCAL_EDITED` — it classifies as `IDENTICAL` or `TEMPLATE_UPDATED`, with `region_only: true` on the file. The project part may match either the current template or the one held at `template_commit`, so a consumer whose template moved on is not reported as drift; the git lookup runs only when the cheap comparison is inconclusive. Region awareness activates only when BOTH sides carry the markers, the same rule v2 applies. Measured on real consumer trees: 43,707 bytes of one consumer's region survived intact in the working file, where before the fix it was replaced by the template's empty seed.
