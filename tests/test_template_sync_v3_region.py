@@ -179,6 +179,63 @@ def test_apply_without_markers_on_either_side_is_unchanged(tmp_path):
     assert (proj / "CLAUDE.md").read_text(encoding="utf-8") == "# Toolkit\n\nrule one\n"
 
 
+# --- orphaned region: template has no markers ---------------------------------
+#
+# The consumer keeps a region but the template it syncs against has no markers,
+# so an apply has nowhere to splice it and the region leaves the working file.
+# The toolkit's own template is guarded by a consistency check, but that check
+# says nothing about a forked, locally edited, older or never-shipped template,
+# where the server is the only thing in the loop. Reported BEFORE the apply, and
+# keyed on PRESENCE: the field appears only in the hazardous case, so a caller
+# writes `if "region_orphaned" in info` instead of reasoning about what False
+# means on a build that predates the field.
+
+
+def test_region_orphaned_is_reported_when_the_template_has_no_markers(tmp_path):
+    _, proj = mk(tmp_path, template_now="# Toolkit\n\nrule one\n",
+                 project=f"# Toolkit\n\nrule one\n{BEGIN}\n{MINE}\n{END}\n")
+    info = status_of(proj)
+    assert info["region_orphaned"] is True
+    assert info["status"] == "LOCAL_EDITED"
+
+
+def test_region_orphaned_absent_when_both_sides_carry_markers(tmp_path):
+    base = tpl("rule one")
+    _, proj = mk(tmp_path, template_now=base, project=tpl("rule one", MINE))
+    assert "region_orphaned" not in status_of(proj)
+
+
+def test_region_orphaned_absent_when_neither_side_has_a_region(tmp_path):
+    _, proj = mk(tmp_path, template_now="# Toolkit\n\nrule one\n",
+                 project="# Toolkit\n\nrule one\n")
+    assert "region_orphaned" not in status_of(proj)
+
+
+def test_region_orphaned_absent_when_only_the_template_has_markers(tmp_path):
+    # Nothing of the consumer's is at risk here.
+    _, proj = mk(tmp_path, template_now=tpl("rule one"), project="# Toolkit\n\nrule one\n")
+    assert "region_orphaned" not in status_of(proj)
+
+
+def test_malformed_begin_without_end_is_not_a_region(tmp_path):
+    # penumbra's second residual: BEGIN with no END is not a detected region,
+    # so it must not be reported as an orphaned one either.
+    _, proj = mk(tmp_path, template_now="# Toolkit\n\nrule one\n",
+                 project=f"# Toolkit\n\nrule one\n{BEGIN}\n{MINE}\n")
+    assert "region_orphaned" not in status_of(proj)
+
+
+def test_apply_also_reports_region_orphaned(tmp_path):
+    """A caller that goes straight to apply still gets told, on the same key."""
+    _, proj = mk(tmp_path, template_now="# Toolkit\n\nrule one\n",
+                 project=f"# Toolkit\n\nrule one\n{BEGIN}\n{MINE}\n{END}\n")
+    res = _run(ts.template_apply_file(str(proj), "CLAUDE.md", backup_dir=str(tmp_path / "bak")))
+    assert res["region_orphaned"] is True
+    safe = mk(tmp_path / "safe", template_now=tpl("rule one"), project=tpl("rule one", MINE))[1]
+    assert "region_orphaned" not in _run(
+        ts.template_apply_file(str(safe), "CLAUDE.md", backup_dir=str(tmp_path / "bak2")))
+
+
 # --- cross-path invariant (penumbra) -----------------------------------------
 
 

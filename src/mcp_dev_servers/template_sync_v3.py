@@ -538,6 +538,23 @@ def splice_region(tpl_content: str, proj_content: str | None) -> tuple[str, bool
     return tpl_content.replace(tpl_region, proj_region, 1), True
 
 
+def region_orphaned(tpl_replaced: str | None, proj_content: str | None) -> bool:
+    """True when the project keeps a region the template has nowhere to hold.
+
+    An apply then writes the template wholesale and the region leaves the
+    working file (it survives in backup_dir, so this is recoverable rather
+    than lost). The toolkit guards its own template with a consistency check,
+    but that check cannot see a forked, locally edited, older or never-shipped
+    template -- in those the server is the only thing in the loop, and the
+    failure mode is data loss, so it is worth a field.
+    """
+    if proj_content is None or tpl_replaced is None:
+        return False
+    _proj_part, proj_region = core._split_custom_region(proj_content)
+    _tpl_part, tpl_region = core._split_custom_region(tpl_replaced)
+    return proj_region is not None and tpl_region is None
+
+
 def region_status(entry_hash_hex: str, tpl_replaced: str | None, proj_content: str | None,
                   base_provider) -> str | None:
     """Second opinion on a LOCAL_EDITED verdict when both sides carry the
@@ -647,6 +664,9 @@ def compute_status_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules) -
             if local_diff is not None:
                 info["local_diff"] = local_diff
                 info["local_diff_kind"] = diff_kind(local_diff)
+            # Present only in the hazardous case, so callers key on presence.
+            if region_orphaned(tpl_replaced, proj_content):
+                info["region_orphaned"] = True
             info["template_changed"] = (
                 tpl_replaced is not None and core._sha256(tpl_replaced) != parse_hash(entry.get("hash", ""))
             )
@@ -787,10 +807,11 @@ def apply_file_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules, file_
         elif local_edit:
             local_edit = False   # content already equals the target; nothing is lost
 
+    orphaned = region_orphaned(tpl_replaced, proj_existing)
     target.parent.mkdir(parents=True, exist_ok=True)
     core._write_file_atomic(target, write_content)
     hash_hex = core._sha256(tpl_replaced) if tpl_replaced is not None else core._sha256(write_content)
-    return {
+    result = {
         "file_path": proj_rel,
         "action": ("created" if proj_existing is None else "written") + f"_from_{source}",
         "ownership": "template",
@@ -800,6 +821,10 @@ def apply_file_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules, file_
         "local_edit_overwritten": local_edit,
         "region_preserved": region_preserved,
     }
+    if orphaned:
+        # Present only in the hazardous case, so callers key on presence.
+        result["region_orphaned"] = True
+    return result
 
 
 # -------------------------
