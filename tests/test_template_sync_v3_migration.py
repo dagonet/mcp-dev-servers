@@ -161,7 +161,9 @@ def test_migration_region_and_hunks(tmp_path):
     assert md.startswith("# Project instructions\n<!-- template-sync: project-owned; migrated from CLAUDE.md at ")
     assert f"migration-base: {commit}; rendered: yes -->" in md
     assert "{{NAME}}" not in md and "-Rules line for {{NAME}}" not in md   # base was rendered before diffing
-    assert "Keep this region." in md
+    # v3.1 reversal: the region stays in CLAUDE.md and is reported, not copied.
+    assert "Keep this region." not in md
+    assert res["region_left_in_place"] is True and res["region_bytes"] > 0
     assert res["region_was_seed"] is False
     assert res["gate_self_reference"] == [] and res["gate_unverified"] is False
     assert "```diff\n" in md and "+My extra rule." in md
@@ -206,8 +208,11 @@ def test_migration_region_only_no_migrated_heading(tmp_path):
     repo, proj, commit = _mk_v2(tmp_path, region_only)
     res = _migrate(proj, backup_dir=str(tmp_path / "b"))
     assert res["hunk_count"] == 0 and res["region_was_seed"] is False
+    assert res["region_left_in_place"] is True and res["region_bytes"] > 0
     md = (proj / ".claude" / "rules" / "project.md").read_text(encoding="utf-8")
-    assert "Line one.\nLine two." in md
+    # The region stays in CLAUDE.md; a region-only consumer gets a header-only seed.
+    assert "Line one.\nLine two." not in md
+    assert "Line one.\nLine two." in (proj / "CLAUDE.md").read_text(encoding="utf-8")
     assert "Migrated from CLAUDE.md" not in md and "```diff" not in md
 
 
@@ -246,7 +251,9 @@ def test_migration_base_unavailable_emits_no_hunks(tmp_path):
     assert res["hunk_count"] == 0
     md = (proj / ".claude" / "rules" / "project.md").read_text(encoding="utf-8")
     assert "migration-base: unavailable; rendered: no -->" in md
-    assert "Keep this region." in md
+    assert "Keep this region." not in md
+    assert "Keep this region." in (proj / "CLAUDE.md").read_text(encoding="utf-8")
+    assert res["region_left_in_place"] is True
     assert res["region_was_seed"] is None
     assert res["redundant_project_file"] == []
 
