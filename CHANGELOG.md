@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `template-sync-tools`: **`region_markers_malformed`** — `template_compute_status` and `template_apply_file` report `"project"`, `"template"` or `"both"` when PROJECT-CUSTOM markers are present but do not form a region (BEGIN with no END, END with no BEGIN, or END before BEGIN). Such a file has no region to splice, so an apply replaces it whole and whatever sits between the broken markers leaves the working file — the same loss `region_orphaned` reports, arriving through a shape that is unparseable rather than absent. Closes the hole penumbra measured, where a consumer trusting "I am told before a region is dropped" was covered in one case and not the other. Presence-keyed, like `region_orphaned`. The template side is reported too: a broken pair there is a template bug, but the consumer is the one who loses the region and the only party positioned to notice before the write.
+
 ## [0.3.2] — 2026-09-09
 
 ### Compatibility
