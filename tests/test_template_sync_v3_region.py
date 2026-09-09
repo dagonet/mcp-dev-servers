@@ -219,10 +219,62 @@ def test_region_orphaned_absent_when_only_the_template_has_markers(tmp_path):
 
 def test_malformed_begin_without_end_is_not_a_region(tmp_path):
     # penumbra's second residual: BEGIN with no END is not a detected region,
-    # so it must not be reported as an orphaned one either.
+    # so it must not be reported as an orphaned one either -- it is reported
+    # as malformed instead, so the promise "you are told before a region is
+    # dropped" has no hole in it.
     _, proj = mk(tmp_path, template_now="# Toolkit\n\nrule one\n",
                  project=f"# Toolkit\n\nrule one\n{BEGIN}\n{MINE}\n")
-    assert "region_orphaned" not in status_of(proj)
+    info = status_of(proj)
+    assert "region_orphaned" not in info
+    assert info["region_markers_malformed"] == "project"
+
+
+# --- malformed markers: case H, and the template side ------------------------
+
+
+def test_markers_malformed_detects_each_broken_shape():
+    assert v3.markers_malformed(f"a\n{BEGIN}\nb\n") is True          # BEGIN, no END
+    assert v3.markers_malformed(f"a\n{END}\nb\n") is True            # END, no BEGIN
+    assert v3.markers_malformed(f"a\n{END}\nb\n{BEGIN}\n") is True   # out of order
+    assert v3.markers_malformed(f"a\n{BEGIN}\nb\n{END}\n") is False  # well formed
+    assert v3.markers_malformed("a\nb\n") is False                   # no markers
+    assert v3.markers_malformed(None) is False
+
+
+def test_region_markers_malformed_names_the_template_side(tmp_path):
+    """A broken pair in the template is the toolkit's bug, but the consumer is
+    the one who loses the region and the only party positioned to notice."""
+    _, proj = mk(tmp_path, template_now=f"# Toolkit\n\nrule one\n{BEGIN}\n",
+                 project=tpl("rule one", MINE))
+    assert status_of(proj)["region_markers_malformed"] == "template"
+
+
+def test_region_markers_malformed_names_both_sides(tmp_path):
+    _, proj = mk(tmp_path, template_now=f"# Toolkit\n\nrule one\n{BEGIN}\n",
+                 project=f"# Toolkit\n\nrule one\n{END}\n")
+    assert status_of(proj)["region_markers_malformed"] == "both"
+
+
+def test_region_markers_malformed_absent_when_both_sides_are_well_formed(tmp_path):
+    base = tpl("rule one")
+    _, proj = mk(tmp_path, template_now=base, project=tpl("rule one", MINE))
+    assert "region_markers_malformed" not in status_of(proj)
+
+
+def test_region_markers_malformed_absent_when_there_are_no_markers(tmp_path):
+    _, proj = mk(tmp_path, template_now="# Toolkit\n\nrule one\n",
+                 project="# Toolkit\n\nrule one\n")
+    assert "region_markers_malformed" not in status_of(proj)
+
+
+def test_apply_also_reports_region_markers_malformed(tmp_path):
+    _, proj = mk(tmp_path, template_now="# Toolkit\n\nrule one\n",
+                 project=f"# Toolkit\n\nrule one\n{BEGIN}\n{MINE}\n")
+    res = _run(ts.template_apply_file(str(proj), "CLAUDE.md", backup_dir=str(tmp_path / "bak")))
+    assert res["region_markers_malformed"] == "project"
+    safe = mk(tmp_path / "safe", template_now=tpl("rule one"), project=tpl("rule one", MINE))[1]
+    assert "region_markers_malformed" not in _run(
+        ts.template_apply_file(str(safe), "CLAUDE.md", backup_dir=str(tmp_path / "bak2")))
 
 
 def test_apply_also_reports_region_orphaned(tmp_path):

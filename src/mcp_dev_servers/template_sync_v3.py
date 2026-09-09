@@ -555,6 +555,41 @@ def region_orphaned(tpl_replaced: str | None, proj_content: str | None) -> bool:
     return proj_region is not None and tpl_region is None
 
 
+def markers_malformed(content: str | None) -> bool:
+    """True when PROJECT-CUSTOM markers are present but do not form a region.
+
+    BEGIN with no END, END with no BEGIN, or END before BEGIN. Such a file has
+    no region to splice, so an apply replaces it whole and whatever the
+    consumer put between the broken markers leaves the working file -- the
+    same loss `region_orphaned` reports, arriving through a shape that is
+    unparseable rather than absent.
+    """
+    if content is None:
+        return False
+    _part, region = core._split_custom_region(content)
+    if region is not None:
+        return False
+    return core.CUSTOM_REGION_BEGIN in content or core.CUSTOM_REGION_END in content
+
+
+def malformed_side(tpl_replaced: str | None, proj_content: str | None) -> str | None:
+    """Which side carries broken markers: "project", "template", "both", None.
+
+    The template side is reported too. A broken pair there is the toolkit's
+    bug, but the consumer is the one who loses the region and the only party
+    positioned to notice before the write.
+    """
+    in_tpl = markers_malformed(tpl_replaced)
+    in_proj = markers_malformed(proj_content)
+    if in_tpl and in_proj:
+        return "both"
+    if in_proj:
+        return "project"
+    if in_tpl:
+        return "template"
+    return None
+
+
 def region_status(entry_hash_hex: str, tpl_replaced: str | None, proj_content: str | None,
                   base_provider) -> str | None:
     """Second opinion on a LOCAL_EDITED verdict when both sides carry the
@@ -667,6 +702,9 @@ def compute_status_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules) -
             # Present only in the hazardous case, so callers key on presence.
             if region_orphaned(tpl_replaced, proj_content):
                 info["region_orphaned"] = True
+            broken = malformed_side(tpl_replaced, proj_content)
+            if broken is not None:
+                info["region_markers_malformed"] = broken
             info["template_changed"] = (
                 tpl_replaced is not None and core._sha256(tpl_replaced) != parse_hash(entry.get("hash", ""))
             )
@@ -824,6 +862,9 @@ def apply_file_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules, file_
     if orphaned:
         # Present only in the hazardous case, so callers key on presence.
         result["region_orphaned"] = True
+    broken = malformed_side(tpl_replaced, proj_existing)
+    if broken is not None:
+        result["region_markers_malformed"] = broken
     return result
 
 
