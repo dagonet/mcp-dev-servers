@@ -139,12 +139,70 @@ def test_finalize_v3_writes_prefixed_hashes_and_reports_unknown_keys(tmp_path):
     assert out["manifest_version"] == 3
     assert out["template_commit"] == head
     assert out["template_version"] == "v3.1.0"
-    assert out["requires_server"] == ">=0.3.0"
+    assert out["requires_server"] == ">=0.3.2"   # raised from the fixture's >=0.3.0
     assert out["deletedAcknowledged"] == ["x.md"]
     assert "lastSynced" not in out and "version" not in out
     assert out["files"]["CLAUDE.md"] == {"hash": "sha256:" + ts._sha256("v1\n"), "ownership": "template"}
     assert out["files"][".claude/rules/project.md"] == {"ownership": "once"}
     assert out["files"]["hooks/new.sh"] == {"hash": "sha256:" + ts._sha256("n\n"), "ownership": "template"}
+
+
+def test_finalize_raises_a_floor_below_the_splice_floor(tmp_path):
+    """The earliest adopters migrated before the hazard was understood and
+    carry ">=0.3.0" forever: the emitter reaches new projects and the skill
+    gate reaches first migrations, but nothing reaches them. Raising on
+    finalize is what does."""
+    repo, proj = _mk_v3(tmp_path, template={"CLAUDE.md": "v1\n"}, project={"CLAUDE.md": "v1\n"},
+                        entries={}, requires_server=">=0.3.0")
+    res = _run(ts.template_finalize_sync(str(proj), "[]"))
+    assert res["requires_server_raised"] == {"from": ">=0.3.0", "to": ">=0.3.2"}
+    out = json.loads((proj / ".claude" / "template-manifest.json").read_text(encoding="utf-8"))
+    assert out["requires_server"] == ">=0.3.2"
+
+
+def test_finalize_never_lowers_a_stricter_floor(tmp_path):
+    """A consumer who pinned higher has made a decision; silently relaxing it
+    would be the same class of defect this round has been closing. Monotonic
+    tightening is what makes it safe to touch a field the emitter owns."""
+    repo, proj = _mk_v3(tmp_path, template={"CLAUDE.md": "v1\n"}, project={"CLAUDE.md": "v1\n"},
+                        entries={}, requires_server=">=0.9.1")
+    res = _run(ts.template_finalize_sync(str(proj), "[]"))
+    assert "requires_server_raised" not in res
+    out = json.loads((proj / ".claude" / "template-manifest.json").read_text(encoding="utf-8"))
+    assert out["requires_server"] == ">=0.9.1"
+
+
+def test_finalize_leaves_an_equal_floor_alone(tmp_path):
+    repo, proj = _mk_v3(tmp_path, template={"CLAUDE.md": "v1\n"}, project={"CLAUDE.md": "v1\n"},
+                        entries={}, requires_server=">=0.3.2")
+    res = _run(ts.template_finalize_sync(str(proj), "[]"))
+    assert "requires_server_raised" not in res
+    out = json.loads((proj / ".claude" / "template-manifest.json").read_text(encoding="utf-8"))
+    assert out["requires_server"] == ">=0.3.2"
+
+
+def test_finalize_does_not_rewrite_a_floor_it_cannot_parse(tmp_path):
+    """An unparseable floor already makes load refuse. Rewriting it would
+    silently repair a manifest the server does not understand."""
+    repo, proj = _mk_v3(tmp_path, template={"CLAUDE.md": "v1\n"}, project={"CLAUDE.md": "v1\n"},
+                        entries={}, requires_server="^0.3.0")
+    res = _run(ts.template_finalize_sync(str(proj), "[]"))
+    assert "requires_server_raised" not in res
+    assert any("requires_server" in w for w in res["warnings"])
+    out = json.loads((proj / ".claude" / "template-manifest.json").read_text(encoding="utf-8"))
+    assert out["requires_server"] == "^0.3.0"
+
+
+def test_finalize_fallback_floor_is_the_splice_floor(tmp_path):
+    """A v3 manifest that somehow carries no requires_server gets the splice
+    floor written into it, not the older v3 floor."""
+    repo, proj = _mk_v3(tmp_path, template={"CLAUDE.md": "v1\n"}, project={"CLAUDE.md": "v1\n"}, entries={})
+    m = json.loads((proj / ".claude" / "template-manifest.json").read_text(encoding="utf-8"))
+    del m["requires_server"]
+    (proj / ".claude" / "template-manifest.json").write_text(json.dumps(m), encoding="utf-8")
+    _run(ts.template_finalize_sync(str(proj), "[]"))
+    out = json.loads((proj / ".claude" / "template-manifest.json").read_text(encoding="utf-8"))
+    assert out["requires_server"] == ">=0.3.2"
 
 
 def test_finalize_v3_rejects_bad_hash_and_ownership(tmp_path):
