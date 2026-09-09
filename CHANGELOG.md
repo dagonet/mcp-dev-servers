@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `template-sync-tools`: **manifest v3 no longer destroys the PROJECT-CUSTOM region.** Applying a `template`-class file under v3 wrote the template wholesale, wiping the consumer's region — a data-loss regression against v2, which splices it. It mattered because `claude-code-toolkit` v3.1.0 ships `CLAUDE.md` as `template` class *and* keeps the markers in it, with marker text promising "sync-template preserves everything between these markers": a promise printed in the artifact that the mechanism did not keep. The v3 apply path now splices the project's region into the template exactly as v2 does (`region_preserved` in the result), and a region-only difference no longer reads as `LOCAL_EDITED` — it classifies as `IDENTICAL` or `TEMPLATE_UPDATED`, with `region_only: true` on the file. The project part may match either the current template or the one held at `template_commit`, so a consumer whose template moved on is not reported as drift; the git lookup runs only when the cheap comparison is inconclusive. Region awareness activates only when BOTH sides carry the markers, the same rule v2 applies. Measured on real consumer trees: 43,707 bytes of one consumer's region survived intact in the working file, where before the fix it was replaced by the template's empty seed.
+
+### Changed
+
+- `template-sync-tools`: **`template_migrate_manifest` no longer copies the PROJECT-CUSTOM region into `.claude/rules/project.md`.** Under the v3.1 reversal the region stays in `CLAUDE.md`, so copying it does not relocate it — it duplicates it, and the duplicate is the dangerous half, because an unscoped `project.md` is delivered to no agent. The region is now reported instead: `region_left_in_place` and `region_bytes`. Out-of-region edits are still fenced into `project.md`, since an apply does discard those. One consumer's seeded `project.md` drops from ~43.8 KB to 136 bytes as a result.
+
 ## [0.3.1] — 2026-09-05
 
 ### Compatibility

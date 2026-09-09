@@ -520,6 +520,51 @@ def template_status(entry_hash_hex: str, tpl_replaced: str | None,
     return "IDENTICAL", None
 
 
+def splice_region(tpl_content: str, proj_content: str | None) -> tuple[str, bool]:
+    """Put the project's PROJECT-CUSTOM region into the template content.
+
+    Only when BOTH sides carry the markers -- a single-sided region is not
+    project-owned, the same rule the v2 path applies. The toolkit ships
+    CLAUDE.md as `template` class with the markers still in it and marker text
+    promising that sync preserves what is between them, so the v3 apply path
+    has to keep that promise too (toolkit v3.1 reversal).
+    """
+    if proj_content is None:
+        return tpl_content, False
+    _tpl_part, tpl_region = core._split_custom_region(tpl_content)
+    _proj_part, proj_region = core._split_custom_region(proj_content)
+    if tpl_region is None or proj_region is None or proj_region == tpl_region:
+        return tpl_content, False
+    return tpl_content.replace(tpl_region, proj_region, 1), True
+
+
+def region_status(entry_hash_hex: str, tpl_replaced: str | None, proj_content: str | None,
+                  base_provider) -> str | None:
+    """Second opinion on a LOCAL_EDITED verdict when both sides carry the
+    markers: a difference confined to the region is not drift.
+
+    Returns the corrected status, or None to leave the verdict alone. The
+    project part may match either the current template or the one held at
+    sync -- the latter is what keeps a consumer whose template moved on from
+    reading as drift. `base_provider` is called only when the cheap comparison
+    is inconclusive, so the git lookup stays rare.
+    """
+    if proj_content is None or tpl_replaced is None:
+        return None
+    tpl_part, tpl_region = core._split_custom_region(tpl_replaced)
+    proj_part, proj_region = core._split_custom_region(proj_content)
+    if tpl_region is None or proj_region is None:
+        return None
+    if proj_part != tpl_part:
+        base = base_provider()
+        if base is None:
+            return None
+        base_part, base_region = core._split_custom_region(base)
+        if base_region is None or proj_part != base_part:
+            return None
+    return "TEMPLATE_UPDATED" if core._sha256(tpl_replaced) != entry_hash_hex else "IDENTICAL"
+
+
 def _git_commit_exists(repo: str, ref: str) -> bool:
     return core._run_git(["cat-file", "-e", f"{ref}^{{commit}}"], cwd=repo)["exit_code"] == 0
 
@@ -589,7 +634,16 @@ def compute_status_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules) -
             else:
                 status = "MISSING"
         else:
-            status, local_diff = template_status(parse_hash(entry.get("hash", "")), tpl_replaced, proj_content)
+            entry_hash = parse_hash(entry.get("hash", ""))
+            status, local_diff = template_status(entry_hash, tpl_replaced, proj_content)
+            if status == "LOCAL_EDITED":
+                corrected = region_status(
+                    entry_hash, tpl_replaced, proj_content,
+                    lambda: resolve_base(manifest, tpl_rel)[0],
+                )
+                if corrected is not None:
+                    status, local_diff = corrected, None
+                    info["region_only"] = True
             if local_diff is not None:
                 info["local_diff"] = local_diff
                 info["local_diff_kind"] = diff_kind(local_diff)
@@ -705,10 +759,20 @@ def apply_file_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules, file_
     # template class
     backup = None
     local_edit = False
+    region_preserved = False
+    if source == "template" and tpl_replaced is not None:
+        write_content, region_preserved = splice_region(tpl_replaced, proj_existing)
     if proj_existing is not None:
         baseline = parse_hash(entry.get("hash", ""))
         if baseline:
             status, local_diff = template_status(baseline, tpl_replaced, proj_existing)
+            if status == "LOCAL_EDITED":
+                corrected = region_status(
+                    baseline, tpl_replaced, proj_existing,
+                    lambda: resolve_base(manifest, tpl_rel)[0],
+                )
+                if corrected is not None:
+                    status, local_diff = corrected, None
             local_edit = status == "LOCAL_EDITED"
         else:
             # No baseline (new file the project already has): any difference
@@ -734,6 +798,7 @@ def apply_file_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules, file_
         "bytes_written": len(write_content.encode("utf-8")),
         "backup": backup,
         "local_edit_overwritten": local_edit,
+        "region_preserved": region_preserved,
     }
 
 
@@ -881,16 +946,21 @@ def finalize_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules,
 MIGRATION_MARKER = "<!-- template-sync: project-owned; migrated from CLAUDE.md at"
 
 
-def build_project_md(region: str | None, hunks: str, base_label: str, template_version: str) -> str:
+def build_project_md(hunks: str, base_label: str, template_version: str) -> str:
+    """Seed .claude/rules/project.md.
+
+    The PROJECT-CUSTOM region is NOT copied here. Under the toolkit v3.1
+    reversal the region stays in CLAUDE.md, so copying it would not relocate
+    it, it would duplicate it -- and the duplicate is the dangerous half,
+    because an unscoped project.md is delivered to no agent. Out-of-region
+    edits are still reported, since an apply does discard those.
+    """
     rendered = "no" if base_label == "unavailable" else "yes"
     out = [
         "# Project instructions",
         f"{MIGRATION_MARKER} {template_version}; migration-base: {base_label}; rendered: {rendered} -->",
         "",
     ]
-    region_text = (region or "").strip("\n")
-    if region_text:
-        out += [region_text, ""]
     if hunks.strip():
         out += [
             "## Migrated from CLAUDE.md — review, then keep or delete",
@@ -985,7 +1055,7 @@ def migrate_v2_to_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules) ->
     existing = core._read_file(pp / PROJECT_MD)
     project_md = None
     if existing is None:
-        project_md = build_project_md(region_body, hunks, base_label, "v3.1.0")
+        project_md = build_project_md(hunks, base_label, "v3.1.0")
 
     return {
         "manifest": new_manifest,
@@ -996,6 +1066,8 @@ def migrate_v2_to_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules) ->
         "hunk_count": hunk_count,
         "migration_base": base_label,
         "region_was_seed": region_was_seed,
+        "region_left_in_place": proj_region is not None,
+        "region_bytes": len((_region_body(proj_region) or "").encode("utf-8")),
         "gate_self_reference": gate_hits,
         "gate_unverified": gate_declared,
         "unknown_keys": unknown_top_level_keys(new_manifest),
