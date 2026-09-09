@@ -194,6 +194,45 @@ def unknown_top_level_keys(manifest: dict) -> list[str]:
     return sorted(k for k in manifest if k not in KNOWN_TOP_LEVEL_V3)
 
 
+def raise_floor(existing: str | None) -> tuple[str, dict | None, str | None]:
+    """Tighten a `requires_server` floor to the splice floor. Never loosen it.
+
+    Returns (floor_to_write, raised_report_or_None, warning_or_None).
+
+    Monotonic by construction, and that is what makes it safe to touch a
+    field the toolkit's emitter owns: it can only move in the direction that
+    protects. A consumer who pinned a STRICTER floor has made a decision and
+    it is kept -- silently relaxing it would be the same class of defect as
+    the one this floor exists to close. A consumer sitting on ">=0.3.0" is
+    permitting a server that eats their region, which is not a configuration
+    worth preserving; those are the earliest adopters, who migrated before
+    the hazard was understood and whom no emitter change reaches.
+
+    A floor this server cannot parse is left exactly as found and warned
+    about: it already makes load refuse, and rewriting it would silently
+    repair a manifest the server does not understand.
+    """
+    target = f">={MIN_SERVER_FOR_V3}"
+    spec = (existing or "").strip()
+    if not spec:
+        return target, None, None
+    if not spec.startswith(">="):
+        return spec, None, (
+            f"requires_server {spec!r} is not the '>=X.Y.Z' form -- left unchanged; "
+            "it will refuse at load until the emitter writes a floor this server can read"
+        )
+    try:
+        have = parse_version(spec[2:])
+        floor = parse_version(MIN_SERVER_FOR_V3)
+    except ValueError:
+        return spec, None, (
+            f"requires_server {spec!r} does not parse as '>=X.Y.Z' -- left unchanged"
+        )
+    if have >= floor:
+        return spec, None, None
+    return target, {"from": spec, "to": target}, None
+
+
 KNOWN_FILE_KEYS_V3 = {"hash", "ownership"}
 # The named v2 per-file fields migration drops (review §2.10). Anything else
 # on an entry is a consumer annotation: preserved and reported (review §12).
@@ -987,7 +1026,9 @@ def finalize_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules,
     out["manifest_version"] = MANIFEST_VERSION_V3
     out["template_version"] = version
     out["template_commit"] = commit
-    out["requires_server"] = manifest.get("requires_server") or f">={MIN_SERVER_FOR_V3}"
+    out["requires_server"], raised, floor_warning = raise_floor(manifest.get("requires_server"))
+    if floor_warning:
+        warnings.append(floor_warning)
     out["files"] = dict(sorted(files.items()))
     unknown = unknown_top_level_keys(out)
 
@@ -1005,6 +1046,7 @@ def finalize_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules,
         "dropped_entries": sorted(dropped),
         "unknown_keys": unknown,
         "unknown_file_keys": sorted(unknown_files, key=lambda d: d["path"]),
+        **({"requires_server_raised": raised} if raised else {}),
         "consumed_entries": len(consumed),
         "consumed": consumed,
         "warnings": warnings,
