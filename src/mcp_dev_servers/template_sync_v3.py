@@ -1150,10 +1150,20 @@ def migrate_v2_to_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules) ->
     dropped: list[str] = []
     redundant: list[str] = []
     unknown_files: list[dict] = []
+    # v3 has no keep-mine class, so `resolution` is dropped by design (review
+    # §2.8). Dropping it SILENTLY is the defect: the rewritten entry records
+    # the template's hash for a file that still holds the consumer's
+    # deviation, so the next status reports drift and the next apply
+    # overwrites it, while the consumer reads a successful migration and
+    # learns nothing. Migration is careful with keys it does not understand;
+    # it must be at least as loud about the one it does.
+    dropped_resolutions: list[dict] = []
     for proj_rel, entry in manifest.get("files", {}).items():
         proj_rel = core._normalize_path(proj_rel)
         tpl_rel = rules.template_path_for(proj_rel)
         cls = rules.class_of(tpl_rel)
+        if entry.get("resolution"):
+            dropped_resolutions.append({"path": proj_rel, "resolution": entry["resolution"]})
         new_entry = None
         if cls == "template":
             hex_digest = parse_hash(entry.get("templateHash", ""))
@@ -1198,6 +1208,7 @@ def migrate_v2_to_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules) ->
     return {
         "manifest": new_manifest,
         "dropped_entries": sorted(dropped),
+        "dropped_resolutions": sorted(dropped_resolutions, key=lambda d: d["path"]),
         "redundant_project_file": sorted(redundant),
         "project_md": project_md,
         "project_md_existing": existing is not None,
