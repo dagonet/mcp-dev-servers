@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] — 2026-09-11
+
+### Compatibility
+
+- **Additive, reporting only.** No manifest field changed, no floor moved, and migration behaviour is exactly what it was: a keep-mine entry still becomes `template`-owned and the file on disk is still untouched by the migration. The single difference is that `template_migrate_manifest` now *tells you* which records it discarded. Restart the MCP server to pick it up — the per-session observable is `server_version` in the `template_load_manifest` response, never `pip show`, the `dist-info`, or the tag.
+- **The empty case is asserted.** An absent `dropped_resolutions` means "no entry carried a keep-mine record", not "this build cannot tell you" — so a caller can branch on the absence, which is the same discipline as the `capabilities` witnesses in 0.3.3.
+
 ### Added
 
 - `template-sync-tools`: **`template_migrate_manifest` reports `dropped_resolutions`** — the entries whose v2 `"resolution": "keep-mine"` record it discards, as `[{path, resolution}]`. **Keep-mine does not survive v3**: the class does not exist there, so such a file becomes `template`-owned and its manifest entry records the *template's* hash while the file on disk still holds the consumer's deviation. The next status therefore reports drift and the next apply overwrites it — behaviour agreed when v3 was designed, but until now the migration performed it silently, so a consumer read a successful migration and learned nothing. The contrast is what made it a defect rather than a limitation: migration already preserves and reports keys it does *not* understand (`unknown_keys`, `unknown_file_keys`) while discarding the one it does. Measured by penumbra rehearsing a real migration on a throwaway clone. A consumer who is told can re-apply the deviation or upstream it; one who is not discovers it when a file changes under them.
@@ -138,6 +145,12 @@ Initial packaged release. ([PR #1](https://github.com/dagonet/mcp-dev-servers/pu
 - `requirements.txt` (superseded by `pyproject.toml`).
 - Old `src/*_mcp.py` paths at repo root (modules moved into the package).
 
-[Unreleased]: https://github.com/dagonet/mcp-dev-servers/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.3...v0.3.4
+[0.3.3]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.2...v0.3.3
+[0.3.2]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.1...v0.3.2
+[0.3.1]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/dagonet/mcp-dev-servers/compare/v0.2.1...v0.3.0
+[0.2.1]: https://github.com/dagonet/mcp-dev-servers/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/dagonet/mcp-dev-servers/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/dagonet/mcp-dev-servers/releases/tag/v0.1.0
