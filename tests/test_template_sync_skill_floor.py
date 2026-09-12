@@ -123,8 +123,21 @@ def test_absent_skill_version_refuses_in_write_mode(tmp_path):
     assert "error" in res
     assert "skill_version" in res["error"]
     assert ">=v3.1.3" in res["error"]
-    # The two sentences the toolkit asked to survive any edit.
-    assert "RESTART" in res["error"]
+    # TWO populations reach this refusal and their remedies differ, so the text
+    # must run both arms in parallel rather than diagnosing one and mentioning
+    # the other last. A stale skill body passes nothing because it has no
+    # instruction to; a caller that is NOT the skill passes nothing whatever body
+    # the session loaded, because the step that passes the value only runs when
+    # the skill runs. Addressing only the first sends the second to restart, call
+    # again, and read the same message -- measured on a consumer who was both at
+    # once, so the diagnosis was true of them by coincidence.
+    assert "IF YOU ARE THE sync-template SKILL" in res["error"]
+    assert "IF YOU ARE NOT THE SKILL" in res["error"]
+    assert SENTINEL in res["error"]
+    assert "dry_run" in res["error"]
+    # The two sentences the toolkit asked to survive any edit, in its own later
+    # wording: a fresh session, and that a re-copy alone does nothing for this one.
+    assert "FRESH SESSION" in res["error"]
     assert "without restarting" in res["error"]
     assert res.get("migrated") is not True
     # Nothing written, and no backup taken either: the refusal precedes both.
@@ -188,7 +201,12 @@ def test_below_the_floor_refuses_and_names_both_values(tmp_path):
     res = _migrate(proj, backup_dir=str(tmp_path / "b"), skill_version="v3.0.3")
     assert "error" in res
     assert "v3.0.3" in res["error"] and ">=v3.1.3" in res["error"]
-    assert "RESTART" in res["error"]
+    assert "FRESH SESSION" in res["error"]
+    assert "without restarting" in res["error"]
+    # No population split here, deliberately: a caller that passed a tag-shaped
+    # value IS the skill, or is impersonating one on purpose. Offering it the
+    # not-a-skill bypass would read as "say you are not the skill and proceed".
+    assert SENTINEL not in res["error"]
 
 
 # ---------------------------------------------------------------------------

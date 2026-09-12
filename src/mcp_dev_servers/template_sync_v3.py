@@ -220,9 +220,11 @@ SKILL_BYPASS_SENTINEL = "not-a-skill"
 # as a git ref before. Named as a mismatch instead.
 SKILL_TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 
+# The below-floor arm needs no population split: a caller that passed a
+# tag-shaped value IS the skill, or is impersonating one on purpose.
 _SKILL_REMEDY = (
     "copy user-level-reference/skills/sync-template/SKILL.md from toolkit tag {tag} or "
-    "later into ~/.claude/skills/sync-template/SKILL.md, then RESTART this session and run "
+    "later into ~/.claude/skills/sync-template/SKILL.md, then START A FRESH SESSION and run "
     "the sync again. Re-copying without restarting changes nothing for this session. "
     "Pass dry_run=True to inspect without migrating."
 )
@@ -258,15 +260,32 @@ def skill_floor_satisfied(spec: str, claimed: str) -> tuple[bool, str, str, bool
     if claimed == SKILL_BYPASS_SENTINEL:
         return True, "", "", True
     if not claimed:
+        # TWO populations arrive here and their remedies differ, so the text runs
+        # both arms in parallel rather than diagnosing one and mentioning the
+        # other last. A stale skill body passes nothing because it has no
+        # instruction to; a caller that is not the skill at all -- a harness, a
+        # direct tool call, a human -- passes nothing regardless of which body
+        # the session loaded, because the thing that passes skill_version is the
+        # skill's migration step and that step only runs when the skill runs.
+        # Addressing only the first sends the second to restart, call again, and
+        # read the same message. Measured on a consumer who was BOTH at once, so
+        # the diagnosis was true of them by coincidence while only the second
+        # fact explained their empty field.
         return False, (
             f"template_migrate_manifest refused: this caller did not identify its "
             f"sync-template skill version, and templates/ownership.json declares "
-            f"requires_skill \"{spec}\". You are probably running a session that loaded an "
-            f"older SKILL.md before that version existed -- a running session keeps the body "
-            f"it read at startup, so the file on disk may already be current while this "
-            f"session is not. Fix: " + _SKILL_REMEDY.format(tag=floor) +
-            f" A caller that is not the sync-template skill passes "
-            f"skill_version=\"{SKILL_BYPASS_SENTINEL}\"."
+            f"requires_skill \"{spec}\". Two callers arrive here, and the remedy differs: "
+            f"-- IF YOU ARE THE sync-template SKILL: the body this session loaded predates "
+            f"{floor} and has no instruction to identify itself. A running session keeps the "
+            f"body it read at startup, so the file on disk may already be current while this "
+            f"session is not. Copy user-level-reference/skills/sync-template/SKILL.md from "
+            f"toolkit tag {floor} or later into ~/.claude/skills/sync-template/SKILL.md if it "
+            f"is not already there, then START A FRESH SESSION. Re-copying without restarting "
+            f"changes nothing for this session. "
+            f"-- IF YOU ARE NOT THE SKILL (a harness, a direct tool call, a human): pass "
+            f"skill_version=\"{SKILL_BYPASS_SENTINEL}\" exactly. Case-sensitive; near-misses "
+            f"refuse by design. "
+            f"dry_run=True previews without migrating and is never refused."
         ), "", False
     m = SKILL_TAG_RE.match(claimed)
     if not m:
