@@ -1538,6 +1538,9 @@ async def template_migrate_manifest(
         JSON with migrated, dry_run, migration_base, hunk_count, project_md,
         project_md_bytes, project_md_existing, region_was_seed (the region
         was the toolkit's untouched seed and is omitted), dropped_entries,
+        dropped_file_keys ([{path, keys}] -- consumer annotations on entries
+        being dropped, which no other field would report; the values survive in
+        the pre-migration manifest copied to backup_dir),
         redundant_project_file (byte-identical copies of files that are now
         project-owned; suggestion only, never deleted), dropped_resolutions
         ([{path, resolution, ownership}] -- entries whose v2 "keep-mine" record
