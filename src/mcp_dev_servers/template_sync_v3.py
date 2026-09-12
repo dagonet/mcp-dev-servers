@@ -1163,7 +1163,18 @@ def migrate_v2_to_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules) ->
         tpl_rel = rules.template_path_for(proj_rel)
         cls = rules.class_of(tpl_rel)
         if entry.get("resolution"):
-            dropped_resolutions.append({"path": proj_rel, "resolution": entry["resolution"]})
+            # The class the file lands in is what decides whether the dropped
+            # record matters: `template` means the next apply overwrites the
+            # deviation, `once` means apply KEEPS the consumer's file (0 bytes
+            # written), and `project`/null means the server never writes it at
+            # all. Reporting the row without the class leaves the caller to join
+            # against the returned manifest, and a caller who skips the join
+            # warns about files v3 already protects -- measured on a live
+            # consumer whose four deviation-bearing entries were all safe. False
+            # alarms are not a lesser failure here: they teach a consumer to
+            # skim the one warning that is real.
+            dropped_resolutions.append({"path": proj_rel, "resolution": entry["resolution"],
+                                        "ownership": cls})
         new_entry = None
         if cls == "template":
             hex_digest = parse_hash(entry.get("templateHash", ""))

@@ -1540,10 +1540,12 @@ async def template_migrate_manifest(
         was the toolkit's untouched seed and is omitted), dropped_entries,
         redundant_project_file (byte-identical copies of files that are now
         project-owned; suggestion only, never deleted), dropped_resolutions
-        (entries whose v2 "keep-mine" record is discarded -- v3 has no
-        keep-mine class, so those files become template-owned and the next
-        sync overwrites the deviation unless the consumer re-applies it or
-        the template absorbs it), gate_self_reference
+        ([{path, resolution, ownership}] -- entries whose v2 "keep-mine" record
+        is discarded, since v3 has no keep-mine class. `ownership` is the class
+        the file LANDS in and is what decides whether the drop matters:
+        "template" means the next sync overwrites the deviation, "once" means
+        apply keeps the consumer's file, "project"/null means the server never
+        writes it), gate_self_reference
         (a **Gate**:/**Test**: value pointing at a template-class path --
         write mode refuses), gate_unverified (a **Gate**: is declared and this
         tool did not run it), unknown_keys, warnings, backup, written.
