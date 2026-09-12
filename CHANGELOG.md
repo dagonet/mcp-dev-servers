@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.8] — 2026-09-12
+
+### Compatibility
+
+- **Refusal wording only. No behaviour changed and no field changed** — which caller is refused, and when, is exactly as in 0.3.7. The only difference is that the message a refused caller reads now answers *both* readers who arrive at it.
+- **If you are not the sync-template skill, the answer is still `skill_version="not-a-skill"`** — it is now stated in an arm addressed to you rather than in the last sentence of a paragraph addressed to someone else. This was the actual defect: a harness or a direct tool call would restart the session as instructed, call again, and be refused again by the same text.
+- No reason to restart for this release unless you are currently *hitting* that refusal, in which case the newer text is worth reading.
+
 ### Fixed
 
 - `template-sync-tools`: **the absent-`skill_version` refusal now addresses both callers that reach it, in parallel arms.** Two populations hit that refusal for different reasons: a **stale skill body**, which passes nothing because it has no instruction to, and a caller that **is not the skill at all** — a harness, a direct `template_migrate_manifest` call, a human — which passes nothing whatever body the session loaded, because the step that supplies the value only runs when the skill runs. The old text diagnosed the first ("you are probably running a session that loaded an older SKILL.md… RESTART") and left the sentinel to the last sentence, so the second population was pointed at the wrong remedy: restart, call again, read the same message. Now each arm is labelled and addressed — re-copy plus a fresh session for the skill, `skill_version="not-a-skill"` for everyone else — with the `dry_run` note last. The below-floor arm is deliberately *not* split: a caller that passed a tag-shaped value is the skill, or is impersonating one on purpose, and offering it the bypass would read as "declare you are not the skill and proceed" (asserted). Found by a consumer (penumbra) who was **both populations at once**, so the old diagnosis was true of them by coincidence while only the second fact explained their empty field. Text supplied by the `claude-code-toolkit` controller and used verbatim; no behaviour changed, no field changed — which caller is refused, and when, is exactly as in 0.3.7.
@@ -206,7 +214,8 @@ Initial packaged release. ([PR #1](https://github.com/dagonet/mcp-dev-servers/pu
 - `requirements.txt` (superseded by `pyproject.toml`).
 - Old `src/*_mcp.py` paths at repo root (modules moved into the package).
 
-[Unreleased]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.7...HEAD
+[Unreleased]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.8...HEAD
+[0.3.8]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.4...v0.3.5
