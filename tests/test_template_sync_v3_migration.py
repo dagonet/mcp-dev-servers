@@ -215,7 +215,8 @@ def test_migration_reports_the_keep_mine_entries_it_drops(tmp_path):
     res = _migrate(proj, backup_dir=str(tmp_path / "b"))
 
     assert res["dropped_resolutions"] == [
-        {"path": "hooks/enforce-delegation.sh", "resolution": "keep-mine"}
+        {"path": "hooks/enforce-delegation.sh", "resolution": "keep-mine",
+         "ownership": "template"}
     ]
     # The behaviour itself is the agreed one and is unchanged: the entry
     # becomes template class, so the deviation is no longer protected.
@@ -450,3 +451,50 @@ def test_v2_manifest_still_migrates_after_the_v1_guard(tmp_path):
     res = _migrate(proj, backup_dir=str(tmp_path / "b"))
     assert "error" not in res
     assert res["migrated"] is True
+
+
+# ---------------------------------------------------------------------------
+# dropped_resolutions rows carry the resulting ownership (0.3.5 item 4).
+# ---------------------------------------------------------------------------
+
+def test_dropped_resolution_rows_carry_the_resulting_ownership(tmp_path):
+    """A dropped keep-mine record is only a hazard when the file lands in the
+    TEMPLATE class -- `once` keeps the consumer's file (apply returns "kept",
+    0 bytes) and a classless path is never written at all. Without the class on
+    the row a caller has to join against the returned manifest to know which,
+    and one that skips the join warns about files v3 already protects. Measured
+    on a live consumer: all four of their deviation-bearing entries were safe.
+    """
+    entries = {
+        "hooks/at-risk.sh": {"templateHash": ts._sha256("t\n"), "localHash": ts._sha256("mine\n"),
+                             "locallyModified": True, "resolution": "keep-mine"},
+        ".gitignore": {"templateHash": ts._sha256("ig\n"), "localHash": ts._sha256("mine\n"),
+                       "locallyModified": True, "resolution": "keep-mine"},
+        ".claude/agents/local-x.md": {"templateHash": ts._sha256("l\n"), "localHash": ts._sha256("l\n"),
+                                     "locallyModified": False, "resolution": "keep-mine"},
+        # No rule matches this path at all -- the template stopped shipping it.
+        "CLAUDE.local.md": {"templateHash": ts._sha256("local Demo\n"),
+                            "localHash": ts._sha256("local Demo\n"),
+                            "locallyModified": False, "resolution": "keep-mine"},
+    }
+    repo, proj, commit = _mk_v2(
+        tmp_path, PROJ_CLAUDE, extra_entries=entries,
+        extra_project={"hooks/at-risk.sh": "mine\n", ".gitignore": "mine\n",
+                       ".claude/agents/local-x.md": "l\n"})
+    (repo / "templates" / "general" / "gitignore").write_text("ig\n", encoding="utf-8", newline="")
+
+    res = _migrate(proj, backup_dir=str(tmp_path / "b"))
+
+    rows = {r["path"]: r for r in res["dropped_resolutions"]}
+    assert rows["hooks/at-risk.sh"]["ownership"] == "template"      # the real hazard
+    assert rows[".gitignore"]["ownership"] == "once"                # apply keeps it
+    assert rows[".claude/agents/local-x.md"]["ownership"] == "project"
+    assert rows["CLAUDE.local.md"]["ownership"] is None             # no rule matches
+    # The pre-0.3.5 keys are unchanged -- this is additive, nothing renamed.
+    assert rows["hooks/at-risk.sh"]["resolution"] == "keep-mine"
+    assert set(rows["hooks/at-risk.sh"]) == {"path", "resolution", "ownership"}
+    # The class on the row agrees with the class in the manifest it returns.
+    out = json.loads((proj / ".claude" / "template-manifest.json").read_text(encoding="utf-8"))
+    assert out["files"]["hooks/at-risk.sh"]["ownership"] == "template"
+    assert out["files"][".gitignore"]["ownership"] == "once"
+    assert ".claude/agents/local-x.md" not in out["files"]
