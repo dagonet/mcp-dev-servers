@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5] — 2026-09-12
+
+### Compatibility
+
+- **Two additive fields, two docs, and one refusal on a path no consumer is known to be on.** `dropped_resolutions` rows gain `ownership` (nothing renamed) and `dropped_file_keys` is new, so a caller reading the migration response gains information and loses none. The refusal is the v1 guard: a v1 manifest now errors where it previously migrated with a baseline set to the current template. Everything else in a sync is untouched.
+- **One response shape changed**, and only by addition: `dropped_resolutions` rows are `{path, resolution, ownership}` rather than `{path, resolution}`. A caller destructuring by key is unaffected; one asserting the exact row shape will see the new key — as this repo's own 0.3.4 assertion did, which is how the change was caught rather than assumed.
+- **Gate a keep-mine warning on the row's `ownership`, not on the row existing.** Only `"template"` is at risk; `once` keeps the consumer's file and writes 0 bytes, and `project`/`null` is never written at all. Measured on a live consumer, every one of their four deviation-bearing entries was safe — so a step keyed on the bare list would have produced four false alarms and no true ones.
+- Restart the MCP server to pick this up. The per-session observable is `server_version` in the `template_load_manifest` response — never `pip show`, the `dist-info`, or the tag — and **do not reinstall while servers are running**: locked launcher executables have left this venv with no shim mid-flight. Restart, then read the field.
+- `requires_skill`, which the toolkit declares as of its v3.1.3, is **not read by this release**. Do not infer any protection from it being present.
+
 ### Added
 
 - **`docs/template-sync-migration-contract.md`** — the v2 → v3 migration contract, written down. It had lived only in an implementation plan and a tool docstring, which is why a caller could read an entire sync skill end to end and never learn `template_migrate_manifest` existed: the gap that produced most of this round. Documents what was measured rather than what was intended — the **four response shapes** and the order to test them in (an already-v3 no-op and an error both carry no fields, so "field absent" answers the version question only after those are excluded); the field table with every field marked unconditional, against the presence-keyed convention the `region_*` fields follow elsewhere in this server; the two sentinel traps (`migration_base` is the truthy string `"unavailable"`, never `null`; `region_was_seed` is tri-state); that `template_load_manifest` never auto-migrates v2 → v3 while it does upgrade v1 → v2 in memory; that `migration_required` reports only that the template checkout ships an ownership table, not that a migration will succeed; that **`template_finalize_sync` neither migrates nor refuses a v2 manifest**, so skipping the migration is silent and permanent; the ordered call sequence with `dry_run` always first, since that is the only way a `gate_self_reference` refusal surfaces before a consumer is mid-sync; and that `requires_server` is enforced at `template_load_manifest` and nowhere else. The `requires_skill` floor the toolkit now declares is documented as **NOT IMPLEMENTED**, because it is.
@@ -156,7 +166,8 @@ Initial packaged release. ([PR #1](https://github.com/dagonet/mcp-dev-servers/pu
 - `requirements.txt` (superseded by `pyproject.toml`).
 - Old `src/*_mcp.py` paths at repo root (modules moved into the package).
 
-[Unreleased]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.4...HEAD
+[Unreleased]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.5...HEAD
+[0.3.5]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.1...v0.3.2
