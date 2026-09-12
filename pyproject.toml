@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mcp-dev-servers"
-version = "0.3.7"
+version = "0.3.8"
 description = "FastMCP servers for Claude Code: git, GitHub, .NET, Ollama, Rust, template-sync, Python"
 readme = "README.md"
 license = "MIT"
