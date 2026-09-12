@@ -1233,6 +1233,21 @@ def migrate_manifest(pp: pathlib.Path, backup_dir: str, dry_run: bool) -> dict:
         return {"error": "; ".join(errors)}
     if is_v3(manifest):
         return {"migrated": False, "dry_run": dry_run, "reason": "manifest is already v3 -- nothing to migrate"}
+    # Only v2 has the fields this migration reads. A v1 entry carries no
+    # localHash and may carry no templateHash, so migrating one sets the
+    # baseline to the CURRENT template -- recording "identical" for a file the
+    # consumer may have deviated in, which is the silent loss the whole v3 round
+    # exists to stop. The version test matches template_load_manifest's, missing
+    # key included: two readers disagreeing about what a manifest IS would be
+    # worse than either answer. Checked after the v3 test, because a v3 manifest
+    # has no `version` key at all.
+    if manifest.get("version", 1) < 2:
+        return {"error": "manifest is v1 (a missing `version` key reads as 1, as in "
+                         "template_load_manifest); template_migrate_manifest migrates v2 -> v3 only. "
+                         "A v1 entry has no localHash, so migrating it would set the baseline to the "
+                         "current template and report a deviating file as identical. Run "
+                         "template_load_manifest (which upgrades v1 to v2 in memory) and then "
+                         "template_finalize_sync to persist the v2 manifest, then migrate."}
     rules = load_ownership(manifest["templateRepo"])
     if rules is None:
         return {"error": f"cannot migrate: {OWNERSHIP_FILE} not found in the template repo -- "

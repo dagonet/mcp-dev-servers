@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `template-sync-tools`: **`template_migrate_manifest` refuses a v1 manifest instead of migrating it.** The tool guarded only against v3, so a v1 manifest on disk fell straight into the v2 → v3 path — and it re-reads from disk, so it never saw the v1 → v2 upgrade `template_load_manifest` performs in memory. A v1 entry carries no `localHash` and may carry no `templateHash`, so the migration would set the baseline to the *current* template and record "identical" for a file the consumer may have deviated in: the same silent loss the v3 round exists to stop, in the one branch nothing asserted. The version test matches `template_load_manifest`'s, missing `version` key included — two readers disagreeing about what a manifest *is* would be worse than either answer — and the refusal names the remedy (`template_load_manifest` then `template_finalize_sync` persists v2, then migrate). Behaviour change on a path no consumer is known to be on; the v2 path is asserted unchanged by the test that would catch a refuse-everything guard.
+
 ## [0.3.4] — 2026-09-11
 
 ### Compatibility

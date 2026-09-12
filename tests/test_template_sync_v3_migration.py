@@ -382,3 +382,71 @@ def test_migration_open_brain_manifest_shape(tmp_path):
     assert res["unknown_file_keys"] == [{"path": "hooks/h0.sh", "keys": ["reason"]}]
     assert "resolution" not in json.dumps(out["files"])
     assert len(out["files"]) == 26 + 3 + 2                       # agents, hooks, CLAUDE.md, settings.json
+
+
+# ---------------------------------------------------------------------------
+# v1 is refused rather than silently migrated (0.3.5 item 3).
+# ---------------------------------------------------------------------------
+
+def _downgrade_to_v1(proj, drop_version_key: bool = False):
+    """A v1 manifest as one actually looked: no version 2 fields on the entries."""
+    p = proj / ".claude" / "template-manifest.json"
+    m = json.loads(p.read_text(encoding="utf-8"))
+    if drop_version_key:
+        m.pop("version", None)
+    else:
+        m["version"] = 1
+    for entry in m["files"].values():
+        entry.pop("templateRawHash", None)
+        entry.pop("localHash", None)
+    p.write_text(json.dumps(m), encoding="utf-8", newline="")
+    return p.read_text(encoding="utf-8")
+
+
+def test_v1_manifest_is_refused_not_migrated(tmp_path):
+    """migrate_manifest guarded only against v3, so a v1 manifest fell straight
+    into the v2 path. A v1 entry has no localHash and may have no templateHash,
+    so the baseline would be silently set to the CURRENT template -- recording
+    "you are up to date" for a file the consumer may have deviated in, which is
+    the same silent-loss shape 0.3.4 was released to end. Refuse instead.
+    """
+    repo, proj, commit = _mk_v2(tmp_path, PROJ_CLAUDE)
+    before = _downgrade_to_v1(proj)
+
+    res = _migrate(proj, backup_dir=str(tmp_path / "b"))
+
+    assert "error" in res
+    assert "v1" in res["error"]
+    assert "template_load_manifest" in res["error"]      # the remedy, named
+    assert res.get("migrated") is not True
+    # Nothing written: not the manifest, not project.md.
+    assert (proj / ".claude" / "template-manifest.json").read_text(encoding="utf-8") == before
+    assert not (proj / ".claude" / "rules" / "project.md").exists()
+
+
+def test_v1_manifest_is_refused_in_dry_run_too(tmp_path):
+    """dry_run computes the same plan, so it reaches the same bad baseline --
+    the refusal belongs before the plan, not before the write."""
+    repo, proj, commit = _mk_v2(tmp_path, PROJ_CLAUDE)
+    _downgrade_to_v1(proj)
+    res = _migrate(proj, dry_run=True)
+    assert "error" in res and "v1" in res["error"]
+
+
+def test_missing_version_key_reads_as_v1_and_is_refused(tmp_path):
+    """template_load_manifest reads a missing `version` as 1, so this tool must
+    agree with it -- two readers disagreeing about what a manifest IS is worse
+    than either answer."""
+    repo, proj, commit = _mk_v2(tmp_path, PROJ_CLAUDE)
+    _downgrade_to_v1(proj, drop_version_key=True)
+    res = _migrate(proj, dry_run=True)
+    assert "error" in res and "v1" in res["error"]
+
+
+def test_v2_manifest_still_migrates_after_the_v1_guard(tmp_path):
+    """The other arm: the guard must not catch the version it exists to let
+    through. Without this a refuse-everything guard passes the tests above."""
+    repo, proj, commit = _mk_v2(tmp_path, PROJ_CLAUDE)
+    res = _migrate(proj, backup_dir=str(tmp_path / "b"))
+    assert "error" not in res
+    assert res["migrated"] is True
