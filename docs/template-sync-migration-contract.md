@@ -59,10 +59,31 @@ Shapes 1 and 2 are **sparse**: they carry no field from the table in §3. A call
 field presence before excluding them concludes "old server" from a manifest that was simply
 already v3, or from a refusal.
 
-Two tests, never one:
+**Four tests, in this order. Key presence does not answer the version question:**
 
-- `"dropped_resolutions" in result` answers the **version** question.
-- truthiness of `result["dropped_resolutions"]` answers the **content** question.
+```
+1. "error" in result                              -> refused. Report it; say nothing
+                                                     about versions.
+2. result.get("migrated") is False and "reason"   -> already v3. Nothing migrated.
+   in result
+3. server_version from the template_load_manifest -> the VERSION question.
+   response
+4. isinstance(result.get("dropped_resolutions"),  -> the CONTENT question.
+   list) and result["dropped_resolutions"]
+```
+
+**An earlier draft of this file said `"dropped_resolutions" in result` answers the version
+question. It does not, and that sentence was a defect.** Absence has three causes — the
+server predates 0.3.4, no migration ran, or the call errored — so `in` conflates them, and a
+caller that reaches for it reports "old server" about a project that was simply already v3.
+A key present with a non-list value passes `in` while failing truthiness, which lands a
+caller in "nothing was dropped" from a value that says nothing of the kind. This server
+always emits a list in a successful response, but nothing in the response lets a caller
+verify that, and `server_version` is a direct answer where key presence is an inference.
+
+Reported by the `claude-code-toolkit` controller reading this file against their sync
+skill's migration step, which ships these four tests. Their step is the reference
+implementation of this section.
 
 ## 3. Fields (success and `dry_run` responses)
 
