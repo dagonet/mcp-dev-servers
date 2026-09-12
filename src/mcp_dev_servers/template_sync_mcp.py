@@ -1511,7 +1511,11 @@ async def template_migrate_manifest(
     project-class entries dropped, unknown top-level keys preserved).
     Idempotent: an existing project.md is never overwritten and a v3 manifest
     is skipped. CLAUDE.md itself is not touched here -- the apply step
-    overwrites it in the same sync.
+    overwrites it in the same sync. A v1 manifest is REFUSED (a missing
+    `version` key reads as 1, as in template_load_manifest): a v1 entry has no
+    localHash, so migrating it would baseline against the current template and
+    report a deviating file as identical. Run template_load_manifest and
+    template_finalize_sync to persist v2 first.
 
     Args:
         project_path: Path to the project root directory
