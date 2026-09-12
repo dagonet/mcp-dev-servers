@@ -1505,10 +1505,20 @@ async def template_migrate_manifest(
     Steps (toolkit spec §7): extract the PROJECT-CUSTOM region from CLAUDE.md;
     diff the remainder against the template CLAUDE.md at the held revision
     (template_commit, else the template_version tag, never the current
-    template), placeholder-rendered; write .claude/rules/project.md with the
-    region verbatim and the out-of-region hunks fenced as ```diff; rewrite the
+    template), placeholder-rendered; write .claude/rules/project.md with a
+    header and the out-of-region hunks fenced as ```diff; rewrite the
     manifest as v3 (entries classified by templates/ownership.json,
     project-class entries dropped, unknown top-level keys preserved).
+
+    The PROJECT-CUSTOM region is NOT copied into project.md. Under the toolkit
+    v3.1 reversal the region STAYS in CLAUDE.md, so copying it would not
+    relocate it, it would duplicate it -- and the duplicate is the dangerous
+    half, because an unscoped project.md is delivered to no agent. The region
+    is reported instead: region_left_in_place, region_bytes, region_was_seed.
+    (Until 0.3.5 this text claimed the opposite while the code did this --
+    measured by two consumers who documented the artifact over the docstring,
+    correctly. tests/test_template_sync_docstring_contract.py now pins the two
+    together so the prose cannot drift back alone.)
     Idempotent: an existing project.md is never overwritten and a v3 manifest
     is skipped. CLAUDE.md itself is not touched here -- the apply step
     overwrites it in the same sync. A v1 manifest is REFUSED (a missing

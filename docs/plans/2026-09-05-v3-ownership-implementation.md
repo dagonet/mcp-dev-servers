@@ -2699,6 +2699,8 @@ def migrate_manifest(pp: pathlib.Path, backup_dir: str, dry_run: bool) -> dict:
 
 Insert directly before the `@mcp.tool()` that precedes `template_reverse_placeholders` (line ~1351):
 
+> **SUPERSEDED on one point (noted 2026-09-12, plan text left as written).** The docstring drafted below says `project.md` receives "the region verbatim". The v3.1 reversal landed after this plan: the PROJECT-CUSTOM region STAYS in `CLAUDE.md` and is reported (`region_left_in_place`, `region_bytes`), never copied — copying would duplicate rather than relocate it, and an unscoped `project.md` is delivered to no agent. Two consumers read this claim and documented the artifact instead, correctly. The contract surface is `docs/template-sync-migration-contract.md`.
+
 ```python
 @mcp.tool()
 async def template_migrate_manifest(
