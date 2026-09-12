@@ -40,6 +40,7 @@ EXPECTED = {
     "region_markers_malformed",
     "local_diff_kind",
     "server_source",
+    "skill_version_floor",
 }
 
 
@@ -111,12 +112,28 @@ def _witness_server_source(tmp_path) -> bool:
     return (pathlib.Path(src) / "__init__.py").is_file()
 
 
+def _witness_skill_version_floor(tmp_path) -> bool:
+    """Advertising the floor means enforcing it. Three arms, because a name that
+    is present but false is the risk this file exists for: a declared floor
+    refuses an unidentified caller, the exact sentinel bypasses, and a near miss
+    of that sentinel does NOT.
+    """
+    refused, _, _, _ = v3.skill_floor_satisfied(">=v3.1.3", "")
+    ok, _, _, bypassed = v3.skill_floor_satisfied(">=v3.1.3", v3.SKILL_BYPASS_SENTINEL)
+    near_miss_ok, _, _, near_miss_bypassed = v3.skill_floor_satisfied(">=v3.1.3", "not_a_skill")
+    undeclared, _, _, _ = v3.skill_floor_satisfied("", "")
+    return (refused is False and ok is True and bypassed is True
+            and near_miss_ok is False and near_miss_bypassed is False
+            and undeclared is True)
+
+
 WITNESSES = {
     "region_splice": _witness_region_splice,
     "region_orphaned": _witness_region_orphaned,
     "region_markers_malformed": _witness_region_markers_malformed,
     "local_diff_kind": _witness_local_diff_kind,
     "server_source": _witness_server_source,
+    "skill_version_floor": _witness_skill_version_floor,
 }
 
 

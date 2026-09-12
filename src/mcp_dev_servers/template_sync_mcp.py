@@ -1497,6 +1497,7 @@ async def template_migrate_manifest(
     project_path: str,
     backup_dir: str = "",
     dry_run: bool = False,
+    skill_version: str = "",
 ) -> str:
     """
     Migrate a v2 template manifest to v3 (three-class ownership). Call it at
@@ -1533,6 +1534,17 @@ async def template_migrate_manifest(
             template-manifest.json.pre-migration. Required unless dry_run.
         dry_run: Compute and return everything (project_md content, manifest,
             hunk_count, redundant_project_file, warnings) without writing.
+        skill_version: The caller's sync-template skill version, taken from the
+            marker in the BODY being executed -- never from
+            ~/.claude/skills/sync-template/SKILL.md, which reports the disk while
+            the hazard is a session running a body it read at startup. Tag-shaped
+            ("v3.1.3"); a bare "3.1.3" is a named mismatch, not a synonym. When
+            templates/ownership.json declares requires_skill, a WRITE with no
+            value is REFUSED -- a body too old to carry this instruction sends
+            nothing, so absence is the signal rather than a low number. dry_run
+            is never refused. A caller that is not that skill passes exactly
+            "not-a-skill" and is reported as skill_version_bypassed; every near
+            miss refuses.
 
     Returns:
         JSON with migrated, dry_run, migration_base, hunk_count, project_md,
@@ -1555,7 +1567,8 @@ async def template_migrate_manifest(
     """
     from . import template_sync_v3 as v3
     pp = pathlib.Path(project_path).resolve()
-    return json.dumps(v3.migrate_manifest(pp, backup_dir, dry_run), ensure_ascii=False)
+    return json.dumps(v3.migrate_manifest(pp, backup_dir, dry_run, skill_version),
+                      ensure_ascii=False)
 
 
 @mcp.tool()

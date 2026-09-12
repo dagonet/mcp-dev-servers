@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `template-sync-tools`: **`template_migrate_manifest` takes `skill_version` and enforces the toolkit's `requires_skill` floor** — capability name `skill_version_floor`. The checking had been one-directional: the toolkit's sync skill checks this server's version, and this server checked nothing about the skill. New-skill + old-server was gated; **old-skill + new-server was gated by nothing**, and it is the likelier direction, because this server advances on any `git pull` from a working tree while the skill needs a deliberate re-copy into `~/.claude/skills/`, and a `/mcp` reconnect hands a session a brand-new server while its loaded skill body stays whatever it was. Found by a consumer session (yutraffic), who also proposed the guard.
+
+  Behaviour, write mode: no `skill_version` → **refused**; tag-shaped and below the declared floor → **refused**; anything not tag-shaped and not the sentinel → **refused as a named mismatch**; at or above the floor → proceeds. `dry_run` is **never** refused — inspection is what surfaces a `gate_self_reference` before a consumer is mid-sync — and instead reports what a write would have refused. No `requires_skill` declared means nothing to enforce, so absence is not fatal; a floor this server cannot parse is left as found and reported as `requires_skill_unparseable`, on the same rule as `requires_server`: refusing on a value the parser failed to read turns a bug here into a consumer's outage, and guessing a floor is worse than having none.
+
+  **Three design facts are load-bearing and each is pinned by a test.** *Absence is the signal*, not a low version — a body too old to carry the instruction sends nothing at all. *The value comes from the caller*, never from reading the installed `~/.claude/skills/sync-template/SKILL.md`: that file reports the disk, while the failure being gated is a session running a body it read at startup, so a disk read returns a confident green in exactly the stale case. It works because the threat is staleness, not deceit. And *the sentinel fails closed* — a non-skill caller (a harness, a rehearsal rig, a human) passes exactly `not-a-skill` and is reported as `skill_version_bypassed`, while `not_a_skill`, `Not-A-Skill` and every other near miss refuse, because a mistyped sentinel that refuses is a nuisance and one that bypasses is the guard quietly not existing. The bypass exists because without it the guard's first casualty would have been the consumer harnesses that caught the region data-loss regression.
+
+  Both sides are tag-shaped (`">=v3.1.3"` against a marker of `v3.1.3`); a bare `3.1.3` is a **named mismatch, not a synonym**, since a second disagreeing normalisation elsewhere is how the toolkit's emitter once broke as a git ref. `skill_version` is echoed **as claimed, never as verified**. The test suite includes the arm that discriminates a correct implementation from a plausible wrong one: installed skill file absent, declaration good, migration **proceeds** — which a disk-reading implementation and a refuse-everything bug both fail.
+
+### Changed
+
+- `docs/template-sync-migration-contract.md` §8 now documents `requires_skill` as **enforced** rather than NOT IMPLEMENTED, with the write-mode/`dry_run` table, the four load-bearing facts, and the instruction to gate on `"skill_version_floor" in capabilities` rather than on a server version. §3 and §5 gained the new fields and the new refusal.
+
 ## [0.3.6] — 2026-09-12
 
 ### Compatibility

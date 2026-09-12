@@ -1,6 +1,6 @@
 # `template_migrate_manifest` — the v2 → v3 migration contract
 
-**Status: current as of 0.3.5.** This file is the contract surface for the v2 → v3 manifest
+**Status: current as of 0.3.7.** This file is the contract surface for the v2 → v3 manifest
 migration. Until now that contract lived in an implementation plan and a tool docstring,
 which is why a caller could read an entire sync skill end to end and never learn the
 migration tool existed — the gap this document closes.
@@ -12,7 +12,8 @@ did since the v3.1 reversal. A test now pins the docstring to the behaviour
 (`tests/test_template_sync_docstring_contract.py`), but the rule stands: the written file is
 the authority, prose is a claim about it.
 
-Anything marked **NOT IMPLEMENTED** is a design, not a behaviour. Do not gate on it.
+Fields carry the release that introduced them. **`requires_skill` is enforced as of 0.3.7**
+— it was declared-but-ignored before that, and §8 says exactly what it now does.
 
 ---
 
@@ -87,8 +88,8 @@ implementation of this section.
 
 ## 3. Fields (success and `dry_run` responses)
 
-**Every field below is unconditional in a successful response.** None is presence-keyed —
-the sparseness is per response shape, never per field. This is the opposite of the
+**Every field below is unconditional in a successful response, except the two marked
+presence-keyed.** The sparseness is otherwise per response shape, never per field. This is the opposite of the
 `region_*` convention elsewhere in this server, where a field appears only in the hazardous
 case; a reader who carries that habit here concludes that an empty list cannot happen and
 reads absence as "none".
@@ -112,6 +113,9 @@ reads absence as "none".
 | `gate_unverified` | bool | a `**Gate**:` is declared and this tool did not run it |
 | `unknown_keys` | `[key]` | unknown top-level keys, preserved |
 | `unknown_file_keys` | `[{path, keys}]` | annotations on entries that **survive** |
+| `skill_version` | string | echoed as **claimed**, never verified (0.3.7) |
+| `skill_version_unknown` | `true` | **presence-keyed** — only when the caller passed none |
+| `skill_version_bypassed` | `true` | **presence-keyed** — only when the sentinel was used |
 | `warnings` | `[string]` | |
 | `dry_run`, `migrated` | bool | |
 | `backup` | `{claude_md, manifest}` or `null` | |
@@ -183,6 +187,7 @@ Refusals:
 | `gate_self_reference` non-empty | error in write mode; returned as data in `dry_run` |
 | `backup_dir` empty and not `dry_run` | error — use `dry_run` to preview |
 | manifest already v3 | no-op shape 2; writes nothing |
+| `requires_skill` declared and `skill_version` absent, below floor, or malformed | **error in write mode only** (0.3.7) — see §8 |
 
 Idempotent: calling it on a v3 manifest is harmless and writes nothing.
 
@@ -231,14 +236,47 @@ observable. It is read from the imported source, so it is correct for an editabl
 | Floor | Lives in | Enforced | Direction |
 |---|---|---|---|
 | `requires_server` | the project's manifest | `template_load_manifest` **only** | raised monotonically by `finalize`, reported as `requires_server_raised` |
-| `requires_skill` | the toolkit's `templates/ownership.json` | **NOT IMPLEMENTED** — planned 0.3.6 | declared by the toolkit; read at call time |
+| `requires_skill` | the toolkit's `templates/ownership.json` | `template_migrate_manifest`, **write mode only** (0.3.7+) | declared by the toolkit, read at call time; capability `skill_version_floor` |
 
 `requires_server` cannot protect the *first* migration: a v2 manifest carries no floor, and
 no code shipping later reaches a process already running. That gap belongs to the caller's
 own gate.
 
-`requires_skill` is the mirror image — an old caller against a new server — and is **declared
-but not enforced**. The toolkit ships `">=v3.1.3"` today; this server ignores it. When it is
-implemented the load-bearing test will be **absence**, not a low version: a caller too old to
-carry the instruction sends nothing at all. Until then, do not infer any protection from the
-field being present.
+`requires_skill` is the mirror image — an old caller against a new server, which is the
+likelier direction: this server advances on any pull from a working tree, while the skill
+needs a deliberate re-copy, and a `/mcp` reconnect hands a session a brand-new server while
+its loaded skill body stays whatever it was. Since 0.3.7 `template_migrate_manifest` takes
+`skill_version` and compares it to the declared floor. **Gate on
+`"skill_version_floor" in capabilities`, not on the server version.**
+
+| `skill_version` | Write mode | `dry_run` |
+|---|---|---|
+| absent | **REFUSED** | proceeds, `skill_version_unknown: true` |
+| tag-shaped, ≥ floor | proceeds | proceeds |
+| tag-shaped, < floor | **REFUSED** | proceeds, refusal text in `warnings` |
+| exactly `not-a-skill` | proceeds, `skill_version_bypassed: true` | same |
+| anything else | **REFUSED** (named mismatch) | proceeds, refusal text in `warnings` |
+
+Four things about it are load-bearing, and each is pinned by a test:
+
+- **Absence is the signal, not a low version.** A body too old to carry the instruction sends
+  nothing at all, so `skill_version` missing is what identifies a stale skill.
+- **The value comes from the CALLER, never from reading the installed
+  `~/.claude/skills/sync-template/SKILL.md`.** That file reports the *disk*; the failure being
+  gated is a session running a body it read at startup, so a disk read returns a confident
+  green in exactly the stale case. It works because the threat is staleness, not deceit.
+- **`dry_run` is never refused.** Inspection stays open, because previewing is what surfaces a
+  `gate_self_reference` before a consumer is mid-sync.
+- **The sentinel fails closed.** `not-a-skill` is exact and case-sensitive; `not_a_skill`,
+  `Not-A-Skill` and every other near miss **refuse**. A mistyped sentinel that refuses is a
+  nuisance; one that bypasses is the guard quietly not existing.
+
+Both sides are tag-shaped: the floor reads `">=v3.1.3"` and the skill's marker `v3.1.3`. A
+bare `3.1.3` is a **named mismatch, not a synonym** — this server does not normalise the two
+together, because a second, disagreeing normalisation elsewhere is how the toolkit's emitter
+once broke as a git ref. A floor this server cannot parse is left as found and reported as
+`requires_skill_unparseable`: refusing on a value the parser failed to read would turn a bug
+here into a consumer's outage, and guessing a floor is worse than having none.
+
+The echoed `skill_version` is reported **as claimed, never as verified** — no field here
+implies this server checked something it cannot check.

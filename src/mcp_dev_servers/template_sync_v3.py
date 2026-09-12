@@ -48,6 +48,7 @@ CAPABILITIES = (
     "region_markers_malformed",
     "local_diff_kind",
     "server_source",
+    "skill_version_floor",
 )
 OWNERSHIP_FILE = "templates/ownership.json"
 PROJECT_MD = ".claude/rules/project.md"
@@ -84,10 +85,16 @@ def glob_to_regex(pattern: str) -> re.Pattern:
 
 
 class OwnershipRules:
-    def __init__(self, rules: list[dict], tracked_paths: list[str], warnings: list[str]):
+    def __init__(self, rules: list[dict], tracked_paths: list[str], warnings: list[str],
+                 requires_skill: str = ""):
         self.rules = rules
         self.tracked_paths = tracked_paths
         self.warnings = warnings
+        # The toolkit's floor on the CALLER's sync-template skill. Declared in
+        # its own file so it can be raised without a release here -- a floor
+        # living in this code would ship later than the thing it must gate,
+        # which is the 0.3.1 problem in mirror image.
+        self.requires_skill = requires_skill
         self._compiled = [(glob_to_regex(r["pattern"]), r) for r in rules]
 
     def rule_for(self, template_rel: str) -> dict | None:
@@ -151,7 +158,9 @@ def load_ownership(template_repo: str) -> OwnershipRules | None:
             "ownership.json has no tracked_paths -- template_version derivation "
             f"falls back to {tracked}"
         )
-    return OwnershipRules(rules, list(tracked), warnings)
+    floor = data.get("requires_skill")
+    return OwnershipRules(rules, list(tracked), warnings,
+                          floor if isinstance(floor, str) else "")
 
 
 # -------------------------
@@ -191,6 +200,93 @@ def parse_version(s: str) -> tuple[int, int, int]:
     if len(parts) != 3 or not all(p.isdigit() for p in parts):
         raise ValueError(f"not a X.Y.Z version: {s!r}")
     return int(parts[0]), int(parts[1]), int(parts[2])
+
+
+# The one string a non-skill caller passes to say so: a harness, a rehearsal
+# rig, a human driving the tool directly. Without it the guard's first casualty
+# would be the tooling that caught the region data-loss regression, none of
+# which is the sync skill and none of which can honestly claim a skill version.
+#
+# EXACT, case-sensitive, surrounding whitespace only. Every near miss must land
+# in the mismatch arm and REFUSE: a mistyped sentinel that refuses is a
+# nuisance, a mistyped sentinel that bypasses is the guard quietly not existing.
+SKILL_BYPASS_SENTINEL = "not-a-skill"
+
+# Tag-shaped on BOTH sides. The floor reads ">=v3.1.3" and the skill's marker
+# reads "v3.1.3", so a bare "3.1.3" is a different namespace, not a synonym --
+# `VERSION` holds a version number, this holds a tag name, and the `v` is the
+# whole difference. Normalising it away here invites a second, disagreeing
+# normalisation somewhere else, which is exactly how the toolkit's emitter broke
+# as a git ref before. Named as a mismatch instead.
+SKILL_TAG_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+
+_SKILL_REMEDY = (
+    "copy user-level-reference/skills/sync-template/SKILL.md from toolkit tag {tag} or "
+    "later into ~/.claude/skills/sync-template/SKILL.md, then RESTART this session and run "
+    "the sync again. Re-copying without restarting changes nothing for this session. "
+    "Pass dry_run=True to inspect without migrating."
+)
+
+
+def skill_floor_satisfied(spec: str, claimed: str) -> tuple[bool, str, str, bool]:
+    """Compare a caller's claimed sync-template skill version to the floor.
+
+    Returns (ok, refusal, warning, bypassed). `ok` False carries a refusal for
+    WRITE mode only -- dry_run is never refused for this, because the preview is
+    what surfaces a gate_self_reference before a consumer is mid-sync.
+
+    The value is self-asserted by the caller even though the caller is the thing
+    being checked. That is deliberate and it is the only thing that works: the
+    installed ~/.claude/skills/sync-template/SKILL.md reports the DISK, while the
+    failure being gated is a session executing a body it read at startup, so a
+    disk read returns a confident green in precisely the stale case. It holds
+    because the threat is staleness, not deceit -- a body too old to carry the
+    instruction cannot produce the value by accident, and absence is therefore
+    the load-bearing signal rather than a low number.
+    """
+    spec = (spec or "").strip()
+    claimed = (claimed or "").strip()
+    if not spec:
+        return True, "", "", False               # nothing declared, nothing to enforce
+    if not spec.startswith(">=") or not SKILL_TAG_RE.match(spec[2:].strip()):
+        # Same rule as requires_server: a floor this server cannot read is left
+        # exactly as found. Refusing on a value my parser failed to understand
+        # would turn my bug into the consumer's outage, and guessing is worse.
+        return True, "", (f"requires_skill_unparseable: {spec!r} is not the '>=vX.Y.Z' form "
+                          "this server understands -- not enforced"), False
+    floor = spec[2:].strip()
+    if claimed == SKILL_BYPASS_SENTINEL:
+        return True, "", "", True
+    if not claimed:
+        return False, (
+            f"template_migrate_manifest refused: this caller did not identify its "
+            f"sync-template skill version, and templates/ownership.json declares "
+            f"requires_skill \"{spec}\". You are probably running a session that loaded an "
+            f"older SKILL.md before that version existed -- a running session keeps the body "
+            f"it read at startup, so the file on disk may already be current while this "
+            f"session is not. Fix: " + _SKILL_REMEDY.format(tag=floor) +
+            f" A caller that is not the sync-template skill passes "
+            f"skill_version=\"{SKILL_BYPASS_SENTINEL}\"."
+        ), "", False
+    m = SKILL_TAG_RE.match(claimed)
+    if not m:
+        return False, (
+            f"template_migrate_manifest refused: skill_version {claimed!r} is not tag-shaped. "
+            f"templates/ownership.json declares requires_skill \"{spec}\", so the value must "
+            f"read like \"v3.1.3\" -- with the leading 'v', which is what makes it a tag name "
+            f"rather than a bare version number. This server does not normalise the two "
+            f"together. Pass the marker from the top of the skill body you are executing, or "
+            f"skill_version=\"{SKILL_BYPASS_SENTINEL}\" if you are not that skill."
+        ), "", False
+    if tuple(int(g) for g in m.groups()) < tuple(int(g) for g in SKILL_TAG_RE.match(floor).groups()):
+        return False, (
+            f"template_migrate_manifest refused: caller reported sync-template skill "
+            f"{claimed}, and templates/ownership.json declares requires_skill {spec}. That "
+            f"skill body predates the migration step that reports which keep-mine deviations "
+            f"this migration drops, so migrating under it would lose them silently. Fix: "
+            + _SKILL_REMEDY.format(tag=floor)
+        ), "", False
+    return True, "", "", False
 
 
 def requires_server_satisfied(spec: str, server_version: str) -> tuple[bool, str]:
@@ -1252,7 +1348,8 @@ def migrate_v2_to_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules) ->
     }
 
 
-def migrate_manifest(pp: pathlib.Path, backup_dir: str, dry_run: bool) -> dict:
+def migrate_manifest(pp: pathlib.Path, backup_dir: str, dry_run: bool,
+                     skill_version: str = "") -> dict:
     manifest, errors = core._load_manifest(pp)
     if manifest is None:
         return {"error": errors[0]}
@@ -1279,8 +1376,30 @@ def migrate_manifest(pp: pathlib.Path, backup_dir: str, dry_run: bool) -> dict:
     if rules is None:
         return {"error": f"cannot migrate: {OWNERSHIP_FILE} not found in the template repo -- "
                          "the toolkit checkout predates v3.1"}
+    # The skill floor. Refusals apply to WRITE mode only: dry_run is what the
+    # toolkit's own step does first, precisely so a gate_self_reference surfaces
+    # before a consumer is mid-sync, and blocking inspection behind a current
+    # skill would break the step that makes the migration safe.
+    ok, refusal, floor_warning, bypassed = skill_floor_satisfied(rules.requires_skill,
+                                                                 skill_version)
+    if not ok and not dry_run:
+        return {"error": refusal, "skill_version": (skill_version or "").strip(),
+                **({"skill_version_unknown": True} if not (skill_version or "").strip() else {})}
+
     plan = migrate_v2_to_v3(pp, manifest, rules)
     plan["dry_run"] = dry_run
+    # Echoed as CLAIMED, never as verified -- no field here implies this server
+    # checked something it cannot check.
+    plan["skill_version"] = (skill_version or "").strip()
+    if not plan["skill_version"]:
+        plan["skill_version_unknown"] = True
+    if bypassed:
+        plan["skill_version_bypassed"] = True
+    if floor_warning:
+        plan["warnings"].append(floor_warning)
+    if not ok:
+        # dry_run proceeds, but says what a write would do.
+        plan["warnings"].append("skill_version would refuse a write: " + refusal)
     plan["project_md_bytes"] = len((plan["project_md"] or "").encode("utf-8"))
     if dry_run:
         plan["migrated"] = False
