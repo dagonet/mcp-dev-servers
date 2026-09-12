@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.7] — 2026-09-12
+
+### Compatibility
+
+- **This release can REFUSE a migration, and it is the first one that can.** If the template repo declares `requires_skill` and a caller starts a write-mode `template_migrate_manifest` without a matching `skill_version`, the call errors instead of migrating. `claude-code-toolkit` declares `">=v3.1.3"` as of its v3.1.5, so the floor is live in the field today: **a consumer whose session loaded a sync skill older than v3.1.3 will be refused, by design.** The refusal names the remedy and insists on the part people skip — re-copy `SKILL.md`, then **RESTART the session**, because a re-copy alone changes nothing for a session that has already read its body.
+- **If you are not the sync-template skill, pass `skill_version="not-a-skill"`.** Harnesses, rehearsal rigs and humans driving the tool directly are otherwise refused in write mode, which would have made the guard's first casualty the consumer tooling that caught the region data-loss regression. The string is exact and case-sensitive; every near miss refuses.
+- **`dry_run` is never refused.** Preview freely — that is where a `gate_self_reference` surfaces before a consumer is mid-sync — and the preview now says what a write would have refused.
+- **Gate on `"skill_version_floor" in capabilities`, not on the server version.** A version is a proxy for a capability and every proxy eventually disagrees with the thing it stands for.
+- Nothing changes for a template repo that declares no `requires_skill`: there is nothing to enforce, so nothing is enforced. A floor this server cannot parse is left as found and reported as `requires_skill_unparseable`.
+- Restart the MCP server to pick this up; the per-session observable is `server_version` in the `template_load_manifest` response. **Do not reinstall while servers are running.**
+
 ### Added
 
 - `template-sync-tools`: **`template_migrate_manifest` takes `skill_version` and enforces the toolkit's `requires_skill` floor** — capability name `skill_version_floor`. The checking had been one-directional: the toolkit's sync skill checks this server's version, and this server checked nothing about the skill. New-skill + old-server was gated; **old-skill + new-server was gated by nothing**, and it is the likelier direction, because this server advances on any `git pull` from a working tree while the skill needs a deliberate re-copy into `~/.claude/skills/`, and a `/mcp` reconnect hands a session a brand-new server while its loaded skill body stays whatever it was. Found by a consumer session (yutraffic), who also proposed the guard.
@@ -191,7 +202,8 @@ Initial packaged release. ([PR #1](https://github.com/dagonet/mcp-dev-servers/pu
 - `requirements.txt` (superseded by `pyproject.toml`).
 - Old `src/*_mcp.py` paths at repo root (modules moved into the package).
 
-[Unreleased]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.6...HEAD
+[Unreleased]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.7...HEAD
+[0.3.7]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.3...v0.3.4
