@@ -498,3 +498,71 @@ def test_dropped_resolution_rows_carry_the_resulting_ownership(tmp_path):
     assert out["files"]["hooks/at-risk.sh"]["ownership"] == "template"
     assert out["files"][".gitignore"]["ownership"] == "once"
     assert ".claude/agents/local-x.md" not in out["files"]
+
+
+# ---------------------------------------------------------------------------
+# Unknown keys on DROPPED entries are reported (0.3.5 item 5).
+# ---------------------------------------------------------------------------
+
+def test_unknown_keys_on_dropped_entries_are_reported(tmp_path):
+    """carry_unknown_file_keys runs only when a new entry is built, so an
+    annotation on an entry that gets DROPPED was neither carried nor reported:
+    `dropped_entries` gave a bare path and the key vanished from every response.
+    Same silent-loss shape as the keep-mine record 0.3.4 reported, in the branch
+    nobody looked at -- and unobservable without this field, which is why "no
+    consumer has hit it" and "no consumer could tell us" were the same sentence.
+    """
+    entries = {
+        # project class: dropped, and carrying a consumer annotation.
+        ".claude/agents/local-x.md": {"templateHash": ts._sha256("l\n"), "localHash": ts._sha256("l\n"),
+                                     "locallyModified": False, "reason": "Project-specific agent"},
+        # no rule matches: dropped too, with two annotations.
+        "CLAUDE.local.md": {"templateHash": ts._sha256("local Demo\n"),
+                            "localHash": ts._sha256("local Demo\n"), "locallyModified": False,
+                            "reason": "Local only", "owner": "platform-team"},
+        # template class: survives, so it belongs to unknown_file_keys instead.
+        "hooks/kept.sh": {"templateHash": ts._sha256("k\n"), "localHash": ts._sha256("k\n"),
+                          "locallyModified": False, "reason": "Kept annotation"},
+    }
+    repo, proj, commit = _mk_v2(tmp_path, PROJ_CLAUDE, extra_entries=entries,
+                                extra_project={".claude/agents/local-x.md": "l\n",
+                                               "hooks/kept.sh": "k\n"})
+
+    res = _migrate(proj, backup_dir=str(tmp_path / "b"))
+
+    assert res["dropped_file_keys"] == [
+        {"path": ".claude/agents/local-x.md", "keys": ["reason"]},
+        {"path": "CLAUDE.local.md", "keys": ["owner", "reason"]},
+    ]
+    # The two lists partition: a surviving entry is never in both.
+    assert res["unknown_file_keys"] == [{"path": "hooks/kept.sh", "keys": ["reason"]}]
+    dropped_paths = {r["path"] for r in res["dropped_file_keys"]}
+    assert dropped_paths.isdisjoint({r["path"] for r in res["unknown_file_keys"]})
+    assert dropped_paths <= set(res["dropped_entries"])
+    # The values are not lost: the pre-migration manifest is in the backup.
+    bak = json.loads((tmp_path / "b" / "template-manifest.json.pre-migration").read_text(encoding="utf-8"))
+    assert bak["files"]["CLAUDE.local.md"]["owner"] == "platform-team"
+
+
+def test_dropped_file_keys_is_empty_when_no_dropped_entry_is_annotated(tmp_path):
+    """Asserted so an empty list means "nothing annotated" rather than "this
+    build cannot tell you" -- the discipline 0.3.4 established."""
+    repo, proj, commit = _mk_v2(tmp_path, PROJ_CLAUDE)
+    res = _migrate(proj, dry_run=True)
+    assert res["dropped_entries"] == ["CLAUDE.local.md"]     # dropped, but unannotated
+    assert res["dropped_file_keys"] == []
+
+
+def test_superseded_v2_keys_are_not_reported_as_dropped_annotations(tmp_path):
+    """templateHash and friends are dropped by design and reported nowhere; a
+    field that listed them would bury the one key a consumer put there. And
+    `resolution` has its own list, so it must not appear twice."""
+    entries = {
+        "CLAUDE.local.md": {"templateHash": ts._sha256("local Demo\n"),
+                            "localHash": ts._sha256("local Demo\n"),
+                            "locallyModified": True, "resolution": "keep-mine"},
+    }
+    repo, proj, commit = _mk_v2(tmp_path, PROJ_CLAUDE, extra_entries=entries)
+    res = _migrate(proj, dry_run=True)
+    assert res["dropped_file_keys"] == []
+    assert [r["path"] for r in res["dropped_resolutions"]] == ["CLAUDE.local.md"]

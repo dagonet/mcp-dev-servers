@@ -1158,6 +1158,7 @@ def migrate_v2_to_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules) ->
     # learns nothing. Migration is careful with keys it does not understand;
     # it must be at least as loud about the one it does.
     dropped_resolutions: list[dict] = []
+    dropped_file_keys: list[dict] = []
     for proj_rel, entry in manifest.get("files", {}).items():
         proj_rel = core._normalize_path(proj_rel)
         tpl_rel = rules.template_path_for(proj_rel)
@@ -1193,6 +1194,20 @@ def migrate_v2_to_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules) ->
                 unknown_files.append({"path": proj_rel, "keys": carried})
         else:
             dropped.append(proj_rel)
+            # carry_unknown_file_keys runs only when a new entry is built, so an
+            # annotation on a DROPPED entry was neither carried nor reported:
+            # dropped_entries gave a bare path and the key left no trace in any
+            # response. Same silent-loss shape as the keep-mine record, in the
+            # branch nobody looked at -- and unobservable without this field,
+            # which is why "no consumer has hit it" and "no consumer could tell
+            # us" were the same sentence. The VALUES are not lost: the
+            # pre-migration manifest is copied to backup_dir before any write.
+            annotations = sorted(
+                k for k in entry
+                if k not in KNOWN_FILE_KEYS_V3 and k not in SUPERSEDED_V2_FILE_KEYS
+            )
+            if annotations:
+                dropped_file_keys.append({"path": proj_rel, "keys": annotations})
             on_disk = core._read_file(pp / proj_rel)
             if on_disk is not None:
                 held, _label, _w = resolve_base(manifest, tpl_rel)
@@ -1219,6 +1234,7 @@ def migrate_v2_to_v3(pp: pathlib.Path, manifest: dict, rules: OwnershipRules) ->
     return {
         "manifest": new_manifest,
         "dropped_entries": sorted(dropped),
+        "dropped_file_keys": sorted(dropped_file_keys, key=lambda d: d["path"]),
         "dropped_resolutions": sorted(dropped_resolutions, key=lambda d: d["path"]),
         "redundant_project_file": sorted(redundant),
         "project_md": project_md,
