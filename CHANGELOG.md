@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.6] — 2026-09-12
+
+### Compatibility
+
+- **Documentation only. No code changed, no field changed, no behaviour changed** — `mcp_dev_servers` 0.3.6 is byte-identical to 0.3.5 apart from the version string and this file. There is nothing to gate on and no reason to restart for it; the release exists so the corrected contract carries a version a caller can cite.
+- A caller following 0.3.5's `docs/template-sync-migration-contract.md` §2 as written was told to answer "which server am I on?" with `"dropped_resolutions" in result`. **That instruction was wrong** and is the whole content of this release. If any tooling was built against it, replace that test with `server_version` from the `template_load_manifest` response.
+
 ### Fixed
 
 - **`docs/template-sync-migration-contract.md` §2 no longer tells a caller to answer the version question with key presence.** The section listed the four response shapes correctly and then summarised them as two tests, the first being `"dropped_resolutions" in result` — which is the rule this session had already retracted before 0.3.5 shipped, restated in the very file written to prevent that class of mistake. Absence has three causes (the server predates 0.3.4, no migration ran, the call errored), so `in` conflates them and reports "old server" about a project that was simply already v3; and a key present with a non-list value passes `in` while failing truthiness, landing a caller in "nothing was dropped" from a value that says nothing of the kind. Replaced with the four ordered tests, naming **`server_version` from the `template_load_manifest` response** as the version instrument — a direct answer where key presence is an inference. Found by the `claude-code-toolkit` controller reading the doc against their migration step, which ships those four tests; their step is the reference implementation of the section.
@@ -170,7 +177,8 @@ Initial packaged release. ([PR #1](https://github.com/dagonet/mcp-dev-servers/pu
 - `requirements.txt` (superseded by `pyproject.toml`).
 - Old `src/*_mcp.py` paths at repo root (modules moved into the package).
 
-[Unreleased]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.5...HEAD
+[Unreleased]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.6...HEAD
+[0.3.6]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.2...v0.3.3
