@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`docs/template-sync-migration-contract.md` §2 no longer tells a caller to answer the version question with key presence.** The section listed the four response shapes correctly and then summarised them as two tests, the first being `"dropped_resolutions" in result` — which is the rule this session had already retracted before 0.3.5 shipped, restated in the very file written to prevent that class of mistake. Absence has three causes (the server predates 0.3.4, no migration ran, the call errored), so `in` conflates them and reports "old server" about a project that was simply already v3; and a key present with a non-list value passes `in` while failing truthiness, landing a caller in "nothing was dropped" from a value that says nothing of the kind. Replaced with the four ordered tests, naming **`server_version` from the `template_load_manifest` response** as the version instrument — a direct answer where key presence is an inference. Found by the `claude-code-toolkit` controller reading the doc against their migration step, which ships those four tests; their step is the reference implementation of the section.
+
 ## [0.3.5] — 2026-09-12
 
 ### Compatibility
