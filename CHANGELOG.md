@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.9] — 2026-09-14
+
+### Compatibility
+
+- **This release exists because 0.3.8 cannot be installed from a clean environment.** Nothing about the servers changed; the dependency declaration did. If you already have a working install, you need nothing from this release — your environment is what was masking the defect.
+- **If you are installing fresh, use 0.3.9 or later.** `pip install -e .` at 0.3.8 or earlier resolves **mcp 2.x**, where `mcp.server.fastmcp` is a tombstone that raises on import, and every one of the seven servers fails to start.
+- **0.3.9 replaces 0.3.8 as the rollback target** for anyone tracking the `claude-code-toolkit` v4.0 move of `template-sync-tools`. That plan requires an *installable* last-0.3.x build; 0.3.8 is not one on a clean machine, and 0.3.9 is.
+
 ### Fixed
 
 - **`mcp` is pinned to `>=1.2,<2`.** The dependency was declared as a bare `mcp[cli]`, so a fresh `pip install` resolves **mcp 2.2.0**, where `FastMCP` was renamed to `MCPServer` and `mcp/server/fastmcp.py` is a 769-byte tombstone whose import raises `ModuleNotFoundError` with a migration pointer. Every server in this package does `from mcp.server.fastmcp import FastMCP`, so **all seven would fail to start on any fresh install** — while this machine kept working on an mcp 1.27.0 environment installed before 2.x existed. That is why it went unnoticed: the defect is invisible precisely where the code runs, and visible only where nobody had installed yet. Found from outside, by the `claude-code-toolkit` session hitting it on a fresh venv while moving this package's template-sync server into their repo; confirmed here against the published 2.2.0 wheel rather than inferred. Four tests guard it: the declaration excludes 2.x, the installed version agrees with the declaration (asserted separately, since this venv is how the defect hid), `from mcp.server.fastmcp import FastMCP` still works, and a control proves the guard rejects the specs it exists to reject.
@@ -218,7 +226,8 @@ Initial packaged release. ([PR #1](https://github.com/dagonet/mcp-dev-servers/pu
 - `requirements.txt` (superseded by `pyproject.toml`).
 - Old `src/*_mcp.py` paths at repo root (modules moved into the package).
 
-[Unreleased]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.8...HEAD
+[Unreleased]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.9...HEAD
+[0.3.9]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.8...v0.3.9
 [0.3.8]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.5...v0.3.6
