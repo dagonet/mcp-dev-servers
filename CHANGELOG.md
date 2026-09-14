@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`mcp` is pinned to `>=1.2,<2`.** The dependency was declared as a bare `mcp[cli]`, so a fresh `pip install` resolves **mcp 2.2.0**, where `FastMCP` was renamed to `MCPServer` and `mcp/server/fastmcp.py` is a 769-byte tombstone whose import raises `ModuleNotFoundError` with a migration pointer. Every server in this package does `from mcp.server.fastmcp import FastMCP`, so **all seven would fail to start on any fresh install** — while this machine kept working on an mcp 1.27.0 environment installed before 2.x existed. That is why it went unnoticed: the defect is invisible precisely where the code runs, and visible only where nobody had installed yet. Found from outside, by the `claude-code-toolkit` session hitting it on a fresh venv while moving this package's template-sync server into their repo; confirmed here against the published 2.2.0 wheel rather than inferred. Four tests guard it: the declaration excludes 2.x, the installed version agrees with the declaration (asserted separately, since this venv is how the defect hid), `from mcp.server.fastmcp import FastMCP` still works, and a control proves the guard rejects the specs it exists to reject.
+
 ## [0.3.8] — 2026-09-12
 
 ### Compatibility

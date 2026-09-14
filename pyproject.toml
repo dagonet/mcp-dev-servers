@@ -16,7 +16,11 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "License :: OSI Approved :: MIT License",
 ]
-dependencies = ["mcp[cli]"]
+# mcp 2.x renamed FastMCP to MCPServer and ships mcp/server/fastmcp.py as a
+# tombstone that raises ModuleNotFoundError on import. Every server in this
+# package does `from mcp.server.fastmcp import FastMCP`, so an unpinned install
+# resolves 2.x and all seven fail to start. Measured against the 2.2.0 wheel.
+dependencies = ["mcp[cli]>=1.2,<2"]
 
 [project.optional-dependencies]
 ollama = ["httpx"]
