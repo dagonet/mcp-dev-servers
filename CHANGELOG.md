@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **`template-sync-tools` is gone. It ships from `claude-code-toolkit` v4.0.0 onward, from that repo's `server/` directory.** Deleted here: `template_sync_mcp.py` and `template_sync_v3.py` (3,175 lines), the 17 `test_template_sync_*.py` files (235 tests), the `mcp-template-sync-tools` console script, the `template-sync` extra, and every README reference (server table, prerequisites, extras, console-script list, `claude mcp add` example, allowlist sample, scope table, the nine-tool section, and the JSON config sample). `tests/test_smoke.py` was **edited, not deleted** — it carries every server's tool count and template-sync was one row of seven. The package now installs **6 console scripts** and reports **87 tools across 6 servers**.
+
+  **Why it moved:** templates, the sync skill and the server were three artefacts on three release cadences, and every defect in the v3.1 round was a seam between them — a version that meant one thing on one side and another on the other. They now version together under one tag. The decision was the user's, taken against a recommendation not to; the counter-argument that mattered — *every defect that round was found by one side reading the other's artifact* — became a constraint on the move instead: no v4.0 PR merged without a review from a session that did not write it. That produced fifteen outside reviews of the toolkit's implementation from this repo.
+
+  **If you use it:** nothing breaks by upgrading only if you have already re-registered `template-sync-tools` against the toolkit's own exe (`bash server/install.sh` in the toolkit checkout, then point `~/.claude.json` at the printed path, then restart the MCP server — never reinstall). If you have not, **stay on 0.3.9**, which is also the rollback target: it is the last release carrying the server and the first that installs cleanly from a fresh environment.
+
+  `docs/template-sync-migration-contract.md` is kept here as a pointer to its new home rather than deleted, because the 0.3.5 and 0.3.6 entries above link to it and those entries are the record of how that contract was written and corrected. The two v3 implementation plans are annotated as historical and otherwise left exactly as written.
+
 ## [0.3.9] — 2026-09-14
 
 ### Compatibility

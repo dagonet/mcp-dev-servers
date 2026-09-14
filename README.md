@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/dagonet/mcp-dev-servers)
 
-> **Give Claude Code 96 tools that turn natural-language asks into real `git`, `gh`, `dotnet`, `cargo`, `uv`, and Ollama operations.** Seven MCP servers, one `pip install`, opt in per project — so "what changed since main?" becomes a structured diff and "are any NuGet packages vulnerable?" becomes a real audit.
+> **Give Claude Code 87 tools that turn natural-language asks into real `git`, `gh`, `dotnet`, `cargo`, `uv`, and Ollama operations.** Six MCP servers, one `pip install`, opt in per project — so "what changed since main?" becomes a structured diff and "are any NuGet packages vulnerable?" becomes a real audit.
 
 ```
 You: what changed since main?
@@ -25,7 +25,6 @@ Built with [FastMCP](https://github.com/jlowin/fastmcp) and the [Model Context P
 | **dotnet-tools** | `mcp-dotnet-tools` | `mcp_dev_servers.dotnet_mcp` | 19 | .NET build, test, NuGet, EF migrations, code quality, coverage |
 | **ollama-tools** | `mcp-ollama-tools` | `mcp_dev_servers.ollama_mcp` | 6 | Local Ollama LLM operations (health, warmup, compression, JSON extraction) |
 | **rust-tools** | `mcp-rust-tools` | `mcp_dev_servers.rust_mcp` | 4 | Cargo build, test, clippy with structured diagnostics |
-| **template-sync-tools** | `mcp-template-sync-tools` | `mcp_dev_servers.template_sync_mcp` | 9 | Template manifest (v2 and v3 ownership), status, diff, merge, migration, placeholder ops, cross-variant sync |
 | **python-tools** | `mcp-python-tools` | `mcp_dev_servers.python_tools_mcp` | 7 | Python dev workflows (wheel/sdist inspect, smoke install, pytest, ruff, uv build, coverage) |
 
 ## Prerequisites
@@ -39,7 +38,6 @@ Each server has its own external dependencies:
 | **dotnet-tools** | [.NET SDK](https://dotnet.microsoft.com/) 8.0+ |
 | **ollama-tools** | [Ollama](https://ollama.com/) running locally |
 | **rust-tools** | [Rust toolchain](https://rustup.rs/) (cargo, rustc) |
-| **template-sync-tools** | Git (for three-way merge ancestor lookup) |
 | **python-tools** | Python 3.11+, `uv`, `pytest`, `ruff`, `coverage` (in project environment) |
 
 All servers require Python 3.11+.
@@ -58,9 +56,9 @@ Once this package is on PyPI, the shorter form will also work:
 pip install "mcp-dev-servers[ollama]"   # future — not yet published
 ```
 
-**Available extras:** `ollama` (pulls `httpx`), `git`, `github`, `dotnet`, `rust`, `template-sync`, `python-tools`, `dev` (for running tests). The non-`ollama` extras pull no Python packages today — they exist as documentation for which external tool each server expects (see [Prerequisites](#prerequisites)).
+**Available extras:** `ollama` (pulls `httpx`), `git`, `github`, `dotnet`, `rust`, `python-tools`, `dev` (for running tests). The non-`ollama` extras pull no Python packages today — they exist as documentation for which external tool each server expects (see [Prerequisites](#prerequisites)).
 
-The package installs 7 console scripts (`mcp-git-tools`, `mcp-github-tools`, `mcp-dotnet-tools`, `mcp-ollama-tools`, `mcp-rust-tools`, `mcp-template-sync-tools`, `mcp-python-tools`). Register them with `claude mcp add`:
+The package installs 6 console scripts (`mcp-git-tools`, `mcp-github-tools`, `mcp-dotnet-tools`, `mcp-ollama-tools`, `mcp-rust-tools`, `mcp-python-tools`). Register them with `claude mcp add`:
 
 ```bash
 # git-tools (user-level — works in every git repo)
@@ -84,8 +82,6 @@ claude mcp add --scope user --transport stdio rust-tools -- mcp-rust-tools
 # dotnet-tools (project-level — only in .NET projects)
 claude mcp add --scope project --transport stdio dotnet-tools -- mcp-dotnet-tools
 
-# template-sync-tools (user-level — template syncing for any project)
-claude mcp add --scope user --transport stdio template-sync-tools -- mcp-template-sync-tools
 
 # python-tools (user-level — works in every Python project)
 claude mcp add --scope user --transport stdio python-tools -- mcp-python-tools
@@ -110,7 +106,6 @@ Then grant tool permissions in your `settings.json` (user or project level):
       "mcp__dotnet-tools__*",
       "mcp__ollama-tools__*",
       "mcp__rust-tools__*",
-      "mcp__template-sync-tools__*",
       "mcp__python-tools__*"
     ]
   }
@@ -126,7 +121,6 @@ Then grant tool permissions in your `settings.json` (user or project level):
 | ollama-tools | User | Cross-project if running Ollama |
 | rust-tools | User | Every Rust project benefits from these tools |
 | dotnet-tools | Project | Only relevant in .NET projects |
-| template-sync-tools | User | Cross-project template syncing |
 | python-tools | User | Every Python project benefits from these tools |
 
 ## Environment Variables
@@ -257,19 +251,6 @@ Then grant tool permissions in your `settings.json` (user or project level):
 | `cargo_test` | Run tests and return results |
 | `cargo_clippy` | Lint with structured clippy diagnostics |
 
-### template-sync-tools (9 tools)
-
-| Tool | Description |
-|------|-------------|
-| `template_load_manifest` | Load and validate manifest (auto-migrates v1 to v2) |
-| `template_compute_status` | Per-file sync status (UP_TO_DATE, PROJECT_CUSTOM, AUTO_UPDATE, CONFLICT) |
-| `template_get_diff` | Unified diff with three-way merge support |
-| `template_apply_file` | Apply template/provided content (or skip, v2 only), returns manifest entry; under manifest v3 takes `backup_dir` and saves `<file>.pre-sync` + `.diff` before overwriting a locally edited file |
-| `template_finalize_sync` | Atomically write manifest after sync completes |
-| `template_migrate_manifest` | v2→v3 manifest migration: PROJECT-CUSTOM region + fenced out-of-region hunks to `.claude/rules/project.md`, `dry_run` preview |
-| `template_reverse_placeholders` | Deterministic reverse placeholder replacement (longest-first) |
-| `template_check_cross_variant` | Check which variants share identical file content |
-| `template_propagate_to_variants` | Write template-ready content to multiple variant directories |
 
 ## JSON Configuration
 
@@ -298,9 +279,6 @@ As an alternative to `claude mcp add`, you can configure servers directly in `~/
       "env": {
         "OLLAMA_URL": "http://127.0.0.1:11434"
       }
-    },
-    "template-sync-tools": {
-      "command": "mcp-template-sync-tools"
     },
     "python-tools": {
       "command": "mcp-python-tools"
@@ -343,6 +321,11 @@ pytest tests/
 ## Related Projects
 
 Part of an ecosystem for AI-assisted development with Claude Code:
+
+> **Looking for `template-sync-tools`?** It moved to `claude-code-toolkit` in that
+> project's **v4.0.0** and ships from its `server/` directory — the templates, the sync
+> skill and the server now version together. It was removed here in **0.4.0**; the last
+> release of this package that carries it is **0.3.9**, which is also the rollback target.
 
 - [claude-code-toolkit](https://github.com/dagonet/claude-code-toolkit) -- Template system for bootstrapping projects with Claude Code configuration, MCP server setup, and cross-platform setup scripts
 - [open-brain](https://github.com/dagonet/open-brain) -- A personal AI memory system with a CLI, MCP server, and web dashboard; as of v0.3.0 it also compiles topic-level wiki pages with provenance and runs a contradiction-audit pass over your captured notes

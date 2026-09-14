@@ -1,5 +1,11 @@
 # template-sync-tools 0.3.0 — three-class ownership (manifest v3) Implementation Plan
 
+> **Historical record.** `template-sync-tools` moved to `claude-code-toolkit` in that
+> project's v4.0.0 and was removed from this package in 0.4.0. This plan is left exactly
+> as written — it is the record of what was planned and built here, and rewriting it
+> would erase the history the move is built on. The last release carrying the server is
+> 0.3.9.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship mcp-dev-servers 0.3.0: the template-sync server reads manifest v3 with `template`/`once`/`project` ownership, replaces CONFLICT with the §7 statuses, migrates v2 manifests through an explicit tool, and keeps every v2 code path byte-stable.
