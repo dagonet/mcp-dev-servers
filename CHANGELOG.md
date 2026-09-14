@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-09-14
+
+### Compatibility
+
+- **BREAKING: `template-sync-tools` is no longer in this package.** If your `~/.claude.json` registers `template-sync-tools` against `mcp-template-sync-tools`, upgrading to 0.4.0 leaves that registration pointing at a console script this package no longer installs, and the server will fail to start.
+- **Re-register first, or stay on 0.3.9.** Re-registering is three steps, in this order: run `bash server/install.sh` (or `server\install.ps1`) once in your `claude-code-toolkit` checkout; point `template-sync-tools` in `~/.claude.json` at the exe path it prints; restart the MCP server. **Never reinstall to fix skew** — restart.
+- **0.3.9 is the rollback**: the last release carrying the server, and the first that installs cleanly from a fresh environment. `pip install mcp-dev-servers==0.3.9`.
+- **The other six servers are untouched.** Same tools, same names, same behaviour. Only the count in the README changed, because one server left.
+- **One gap, stated rather than hidden.** The toolkit's consumer verification exercised the server-side half on throwaway clones — load, migrate, the floors, the keep-mine reporting — but a skill-driven `/sync-template` from a live session against the v4.0.0 server had not been run when this was cut. That is the consumer's real workflow. It does not affect this removal (nothing here depends on it, and 0.3.9 remains installable), but if you hit something the throwaway-clone runs would not have caught, that is where to look first.
+
 ### Removed
 
 - **`template-sync-tools` is gone. It ships from `claude-code-toolkit` v4.0.0 onward, from that repo's `server/` directory.** Deleted here: `template_sync_mcp.py` and `template_sync_v3.py` (3,175 lines), the 17 `test_template_sync_*.py` files (235 tests), the `mcp-template-sync-tools` console script, the `template-sync` extra, and every README reference (server table, prerequisites, extras, console-script list, `claude mcp add` example, allowlist sample, scope table, the nine-tool section, and the JSON config sample). `tests/test_smoke.py` was **edited, not deleted** — it carries every server's tool count and template-sync was one row of seven. The package now installs **6 console scripts** and reports **87 tools across 6 servers**.
@@ -236,7 +246,8 @@ Initial packaged release. ([PR #1](https://github.com/dagonet/mcp-dev-servers/pu
 - `requirements.txt` (superseded by `pyproject.toml`).
 - Old `src/*_mcp.py` paths at repo root (modules moved into the package).
 
-[Unreleased]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.9...HEAD
+[Unreleased]: https://github.com/dagonet/mcp-dev-servers/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.9...v0.4.0
 [0.3.9]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.8...v0.3.9
 [0.3.8]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/dagonet/mcp-dev-servers/compare/v0.3.6...v0.3.7
