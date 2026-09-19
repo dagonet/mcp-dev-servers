@@ -1,5 +1,11 @@
 # MCP Tool Backlog — Design Document
 
+> **DELIVERED in 0.2.0 — historical record.** The tools specified here already ship,
+> some under merged or renamed APIs (`docs/MCP_TOOL_BACKLOG.md` lists which). The API
+> contracts below are the design as written, not necessarily the shipped signature —
+> read the source for current behaviour. Kept unrewritten as the record of what was
+> designed; the implementation plan alongside it carries the same notice.
+
 Derived from `MCP_TOOL_BACKLOG.md` gap analysis. This document specifies: which server each tool belongs to, whether it's required, API contracts, and cross-cutting design decisions. Implementation ordering is deferred to a separate plan.
 
 ---

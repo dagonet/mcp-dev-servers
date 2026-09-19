@@ -1,4 +1,9 @@
-"""Import-and-registration smoke tests for all 7 MCP servers."""
+"""Import-and-registration smoke tests for every server in SERVERS.
+
+The count lives in the SERVERS table below and nowhere else: a number repeated
+in this docstring is a fact about the day it was written, and this one said
+"7 servers" for the whole of 0.4.0 after template-sync moved out.
+"""
 
 import importlib
 

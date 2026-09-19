@@ -1,5 +1,14 @@
 # MCP Tool Backlog — Implementation Plan
 
+> **DELIVERED in 0.2.0 — historical record. Do NOT execute this plan.** Every tool it
+> describes already ships; see `docs/MCP_TOOL_BACKLOG.md` for which names shipped as
+> proposed and which were merged or renamed. The 53 `- [ ]` boxes below were never
+> ticked — the work was tracked in the PRs, not in this file — so an agentic worker
+> that takes the checkboxes at face value will re-implement tools that already exist.
+> The plan is kept as written because it is the record of what was designed and built;
+> rewriting it would erase that. The two still-open items are `git_show_ref` and
+> `uv_sync`, tracked in `docs/MCP_TOOL_BACKLOG.md`, not here.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Implement 32 MCP tools (11 git, 15 github, 6 python) + 1 existing-tool enhancement across 3 servers

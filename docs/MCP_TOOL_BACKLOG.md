@@ -2,7 +2,7 @@
 
 > **Status as of 0.2.0 — mostly delivered.** This document was written as a gap analysis before the tools existed. Of the **35** tools it names, **28 ship under exactly that name**, **5 shipped under a merged or renamed API**, and **2 are still open**. The "these are missing" framing is therefore stale; the descriptions, input/output contracts and tiering rubric are not, which is why the document is kept rather than deleted.
 >
-> Delivered in 0.2.0: the Tier 1 release-flow tools, the `git-tools` expansion (22 → 34), the `github-tools` expansion (2 → 17), and the new `python-tools` server (7 tools). Package total: 61 → 95 tools across 7 servers.
+> Delivered in 0.2.0: the Tier 1 release-flow tools, the `git-tools` expansion (22 → 34), the `github-tools` expansion (2 → 17), and the new `python-tools` server (7 tools). Package total at 0.2.0: 61 → 95 tools across 7 servers. **Current package (0.4.0): 87 tools across 6 servers** — `template-sync-tools` moved to `claude-code-toolkit` at 0.4.0 (see CHANGELOG). The per-server counts are enforced by `tests/test_smoke.py`, which is the authority for them.
 >
 > **Shipped under a different name than this document proposes:**
 >
