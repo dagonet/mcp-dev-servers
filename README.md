@@ -44,6 +44,17 @@ All servers require Python 3.11+.
 
 ## Quick Start
 
+### Claude Code: install as plugins (recommended)
+
+```bash
+claude plugin marketplace add dagonet/claude-code-toolkit
+claude plugin install git-tools@dagonet   # or github-tools, dotnet-tools, ollama-tools, rust-tools, python-tools
+```
+
+This needs [uv](https://docs.astral.sh/uv/) plus the CLI each server drives (see [Prerequisites](#prerequisites)), and is available from claude-code-toolkit v6.1.0. If you registered a server by hand before (`claude mcp add`), remove that registration after installing the plugin, or the server runs twice. The pip install below stays for other MCP clients.
+
+### Other MCP clients: pip
+
 Install directly from the GitHub repo (PyPI publishing is planned but not yet done — see [Roadmap](#roadmap)):
 
 ```bash
